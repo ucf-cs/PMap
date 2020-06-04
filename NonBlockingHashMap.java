@@ -1,4 +1,5 @@
 // Reference implementation of a resizing hash map.
+// The core of our code is based off of this design.
 // CHM: Concurrent Hash Map
 
 /*
