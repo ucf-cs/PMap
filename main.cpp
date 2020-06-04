@@ -41,20 +41,33 @@ void performOps(int threadNum)
     // TODO: Consider logging these results.
     for (size_t i = 0; i < NUM_OPS; i++)
     {
+        // Choose a random object from the pool.
+        size_t index = rand() % (THREAD_COUNT * NUM_OPS);
+        void *ptr = &pointerPool[index];
+        assert((uintptr_t)ptr % 8 == 0);
         // TODO: Consider not performing rand() on the threads, and instead pre-calculate them.
-        switch (rand() % 3)
+        switch (rand() % 7)
         {
         case 0:
-            hashMap->put((void *)((i * threadNum + 1) * 2), (void *)((i * threadNum + 1) * 2));
+            hashMap->size();
             break;
         case 1:
-            if (hashMap->containsKey((void *)(rand() % (NUM_OPS * THREAD_COUNT))))
-            {
-                std::cout << "Found a key!" << std::endl;
-            }
+            hashMap->isEmpty();
             break;
         case 2:
-            hashMap->remove((void *)(rand() % (NUM_OPS * THREAD_COUNT)));
+            hashMap->containsKey(ptr);
+            break;
+        case 3:
+            hashMap->put(ptr, ptr);
+            break;
+        case 4:
+            hashMap->putIfAbsent(ptr, ptr);
+            break;
+        case 5:
+            hashMap->remove(ptr);
+            break;
+        case 6:
+            hashMap->replace(ptr, ptr, ptr);
             break;
         }
     }

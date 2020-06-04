@@ -3,6 +3,8 @@
 
 #define TIME_UNIT nanoseconds
 
+#include <assert.h>
+
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
@@ -16,6 +18,9 @@
 #include "hashMap.hpp"
 
 ConcurrentHashMap<void *, void *> *hashMap;
+// Create a pool of valid pointers.
+// Threads can and should share these, to encourage overlaps.
+size_t pointerPool[THREAD_COUNT * NUM_OPS];
 
 void threadRunner(std::thread *threads, void function(int threadNum));
 
