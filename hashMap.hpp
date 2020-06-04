@@ -55,12 +55,12 @@ class ConcurrentHashMap
     // Hash function.
     static size_t hash(Key key)
     {
-        //std::array<Key, 1> input{key};
-        //xxh::hash_t<64> hash = xxh::xxhash<64>(input);
+        std::array<Key, 1> input{key};
+        xxh::hash_t<64> hash = xxh::xxhash<64>(input);
 
         //size_t hash = hasher(key);
 
-        size_t hash = (size_t)key;
+        //size_t hash = (size_t)key;
 
         //std::cout << hash << std::endl;
 
@@ -245,10 +245,10 @@ class ConcurrentHashMap
                 return ret;
             }
 
-            CHM(size_t size)
+            CHM(size_t tableCapacity, size_t existingSize)
             {
-                this->size.store(0);
-                slots.store(size);
+                this->size.store(existingSize);
+                slots.store(tableCapacity);
                 resizersCount.store(0);
                 newTable.store(nullptr);
                 copyIdx.store(0);
@@ -338,7 +338,7 @@ class ConcurrentHashMap
                 }
 
                 // Allocate the new table.
-                newTable = new Table(newSize);
+                newTable = new Table(newSize, size);
 
                 // Attempt to CAS the new table.
                 // Only one thread can succeed here.
@@ -463,18 +463,18 @@ class ConcurrentHashMap
         // The number of pairs that can fit in the table.
         size_t len;
 
-        Table(size_t size)
+        Table(size_t tableCapacity, size_t existingSize)
         {
-            assert(size % 2 == 0);
-            assert(size >= MIN_SIZE);
-            new (&chm) CHM(size);
-            pairs = new KVpair[size];
-            for (size_t i = 0; i < size; i++)
+            assert(tableCapacity % 2 == 0);
+            assert(tableCapacity >= MIN_SIZE);
+            new (&chm) CHM(tableCapacity, existingSize);
+            pairs = new KVpair[tableCapacity];
+            for (size_t i = 0; i < tableCapacity; i++)
             {
                 pairs[i].key.store(NULL);
                 pairs[i].value.store(NULL);
             }
-            len = size;
+            len = tableCapacity;
             return;
         }
         ~Table()
@@ -528,13 +528,13 @@ public:
     ConcurrentHashMap()
     {
         //ConcurrentHashMap(Table::MIN_SIZE);
-        Table *newTable = new Table(Table::MIN_SIZE);
+        Table *newTable = new Table(Table::MIN_SIZE, 0);
         table.store(newTable);
         return;
     }
     ConcurrentHashMap(size_t size)
     {
-        Table *newTable = new Table(size);
+        Table *newTable = new Table(size, 0);
         table.store(newTable);
         return;
     }

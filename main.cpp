@@ -48,7 +48,13 @@ void performOps(int threadNum)
             hashMap->put((void *)((i * threadNum + 1) * 2), (void *)((i * threadNum + 1) * 2));
             break;
         case 1:
-            hashMap->containsKey((void *)(rand() % (NUM_OPS * THREAD_COUNT)));
+            if (hashMap->containsKey((void *)(rand() % (NUM_OPS * THREAD_COUNT))))
+            {
+                std::cout << "Found a key!" << std::endl;
+            }
+            break;
+        case 2:
+            hashMap->remove((void *)(rand() % (NUM_OPS * THREAD_COUNT)));
             break;
         }
     }
@@ -117,6 +123,8 @@ int main(void)
 
     std::cout << std::chrono::duration_cast<std::chrono::TIME_UNIT>(finish - start).count();
     std::cout << "\n";
+
+    hashMap->print();
 
     return 0;
 }
