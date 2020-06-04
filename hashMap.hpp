@@ -542,7 +542,7 @@ public:
     // This number is really only meaningful if the size is not being changed by other threads.
     size_t size()
     {
-        return table->chm.size();
+        return table.load()->chm.size.load();
     }
 
     bool isEmpty()
@@ -581,9 +581,9 @@ public:
         return putIfMatch(key, TOMBSTONE, value) == value;
     }
 
-    Value replace(Key key, Value oldValue, Value newValue)
+    bool replace(Key key, Value oldValue, Value newValue)
     {
-        return putIfMatch(key, newValue, oldValue) == oldValue;
+        return (putIfMatch(key, newValue, oldValue) == oldValue);
     }
 
     // TODO: Implement an update method.
@@ -594,7 +594,8 @@ public:
         assert(oldVal != NULL);
         Value retVal = putIfMatch(table.load(), key, newVal, oldVal);
         assert(!IS_MARKED(retVal, 0));
-        assert(retVal != NULL);
+        // TODO: Can we safely ignore this?
+        //assert(retVal != NULL);
         return retVal == TOMBSTONE ? NULL : retVal;
     }
 
