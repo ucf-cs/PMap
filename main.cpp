@@ -45,10 +45,10 @@ void performOps(int threadNum)
         switch (rand() % 3)
         {
         case 0:
-            hashMap.put((void*)(i * threadNum), (void*)(i * threadNum));
+            hashMap->put((void *)((i * threadNum + 1) * 2), (void *)((i * threadNum + 1) * 2));
             break;
         case 1:
-            hashMap.containsKey((void*)(rand() % (NUM_OPS * THREAD_COUNT)));
+            hashMap->containsKey((void *)(rand() % (NUM_OPS * THREAD_COUNT)));
             break;
         }
     }
@@ -62,7 +62,10 @@ void preinsert(int threadNum)
         // 50% prefill.
         if (rand() % 2)
         {
-            hashMap.put((void*)(i * threadNum), (void*)(i * threadNum));
+            void *address = new char();
+            hashMap->put(address, address);
+            //std::cout << std::endl;
+            //hashMap->print();
         }
     }
     return;
@@ -91,6 +94,9 @@ int main(void)
 
     // Create our threads.
     std::thread threads[THREAD_COUNT];
+
+    // Create the hash map.
+    hashMap = new ConcurrentHashMap<void *, void *>();
 
     // Pre-insertion step.
     //threadRunner(threads, preinsert);

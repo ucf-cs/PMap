@@ -47,17 +47,25 @@
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 #define REPROBE_LIMIT 10
 
+std::hash<void *> hasher;
+
 template <class Key, class Value>
 class ConcurrentHashMap
 {
     // Hash function.
     static size_t hash(Key key)
     {
-        Key array[1];
-        array[0] = key;
-        xxh::hash_t<64> hash = xxh::xxhash<64>(array, 1);
+        //std::array<Key, 1> input{key};
+        //xxh::hash_t<64> hash = xxh::xxhash<64>(input);
+
+        //size_t hash = hasher(key);
+
+        size_t hash = (size_t)key;
+
+        //std::cout << hash << std::endl;
+
         // TODO: Is this implcit cast safe to do? I know that I'm getting a 32-bit hash back.
-        return (size_t)hash;
+        return ((size_t)hash);
     }
 
     // Sentinels.
@@ -117,7 +125,7 @@ class ConcurrentHashMap
             // Signals when all resizing is finished.
             std::atomic<size_t> copyDone;
 
-            void copyCheckAndPromote(Table *oldTable, size_t workDone)
+            void copyCheckAndPromote(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, size_t workDone)
             {
                 // TODO: Consider removing some of these non-essential variables once we have done more testing.
                 assert(&(oldTable->chm) == this);
@@ -129,11 +137,17 @@ class ConcurrentHashMap
                 {
                     this->copyDone.fetch_add(workDone);
                 }
-                // TODO: Consider recording the last resize here.
+                // Attempt table promotion.
+                if (copyDone + workDone == oldLen &&
+                    hashMap->table.compare_exchange_strong(oldTable, newTable))
+                {
+                    // TODO: Record the last resize here.
+                    //hashMap->lastResize = std::chrono::high_resolution_clock::now();
+                }
                 return;
             }
 
-            bool copySlot(size_t idx, Table *oldTable, Table *newTable)
+            bool copySlot(ConcurrentHashMap<Key, Value> *hashMap, size_t idx, Table *oldTable, Table *newTable)
             {
                 // A minor optimization to eagerly stop put operations from succeeding by placing a tombstone.
                 Key key;
@@ -187,7 +201,7 @@ class ConcurrentHashMap
                 // Attempt to copy the value into the new table.
                 // Only succeeds if there isn't already a value there.
                 // If there is, we say that our write "happened before" the write that placed the existing value.
-                bool copiedIntoNew = (putIfMatch(newTable, key, oldUnmarked, NULL) == NULL);
+                bool copiedIntoNew = (hashMap->putIfMatch(newTable, key, oldUnmarked, NULL) == NULL);
 
                 // Now that the value has been migrated, replace the old table value with a tombstone.
                 // This will prevent other threads from redundantly attempting to copy to the new table.
@@ -243,7 +257,13 @@ class ConcurrentHashMap
             // TODO: Remove this if possible.
             CHM()
             {
-                CHM(Table::MIN_SIZE);
+                //CHM(Table::MIN_SIZE);
+                this->size.store(0);
+                slots.store(Table::MIN_SIZE);
+                resizersCount.store(0);
+                newTable.store(nullptr);
+                copyIdx.store(0);
+                copyDone.store(0);
             }
 
             // Heuristic to estimate if the table is overfull.
@@ -259,7 +279,7 @@ class ConcurrentHashMap
             }
 
             // A wait-free resize.
-            Table *resize(Table *table)
+            Table *resize(ConcurrentHashMap<Key, Value> *hashMap, Table *table)
             {
                 // Check for a resize in progress.
                 // If one is found, return the already-existing new table.
@@ -339,25 +359,25 @@ class ConcurrentHashMap
                 return newTable;
             }
 
-            Table *copySlotAndCheck(Table *oldTable, size_t idx, bool shouldHelp)
+            Table *copySlotAndCheck(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, size_t idx, bool shouldHelp)
             {
                 assert(&(oldTable->chm) == this);
                 Table *newTable = this->newTable.load();
                 // Don't bother copying if there isn't even a table transfer in progress.
                 assert(newTable != NULL);
                 // Copy the desired slot.
-                if (copySlot(idx, oldTable, newTable))
+                if (copySlot(hashMap, idx, oldTable, newTable))
                 {
                     // Record that a slot was copied.
-                    copyCheckAndPromote(oldTable, 1);
+                    copyCheckAndPromote(hashMap, oldTable, 1);
                 }
                 // Help the copy along, unless this was called recursively.
-                return shouldHelp ? newTable : helpCopy(newTable);
+                return shouldHelp ? newTable : hashMap->helpCopy(newTable);
             }
 
             // Help migrate the table.
             // Do not migrate the whole table by default.
-            void helpCopyImpl(Table *oldTable, bool copyAll = false)
+            void helpCopyImpl(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, bool copyAll = false)
             {
                 assert(&(oldTable->chm) == this);
                 Table *newTable = this->newTable.load();
@@ -379,6 +399,7 @@ class ConcurrentHashMap
                         while (copyIdx < (oldLen << 1) &&
                                !this->copyIdx.compare_exchange_strong(copyIdx, copyIdx + MIN_COPY_WORK))
                         {
+                            // TODO: Shouldn't have to load here explicitly.
                             copyIdx = this->copyIdx.load();
                         }
                         // Panic if the threads have collectively attempted to copy the table twice, yet the work still isn't done.
@@ -396,7 +417,7 @@ class ConcurrentHashMap
                     {
                         // Copy from the old table to the new table.
                         // If we successfully modified the old slot to disallow key replacement.
-                        if (copySlot((copyIdx + i) & (oldLen - 1), oldTable, newTable))
+                        if (copySlot(hashMap, (copyIdx + i) & (oldLen - 1), oldTable, newTable))
                         {
                             // Count it.
                             workDone++;
@@ -406,20 +427,20 @@ class ConcurrentHashMap
                     if (workDone > 0)
                     {
                         // Tell the other threads about it.
-                        copyCheckAndPromote(oldTable, workDone);
+                        copyCheckAndPromote(hashMap, oldTable, workDone);
                     }
                     // Move on to the next chunk of work.
                     copyIdx += MIN_COPY_WORK;
                     // Stop working after just doing the bare minimum amount of work.
                     // NOTE: This can be commented out to instead keep taking on additional chunks of work until the whole resize process is complete.
-                    if (!copyAll && panicStart == -1)
-                    {
-                        return;
-                    }
+                    // if (!copyAll && panicStart == -1)
+                    // {
+                    //     return;
+                    // }
                 }
                 // An extra promotion check in case some thread got stalled while promoting.
                 // TODO: Really a waste if we have confidence that our asserts will succeed.
-                copyCheckAndPromote(oldTable, 0);
+                copyCheckAndPromote(hashMap, oldTable, 0);
                 return;
             }
         };
@@ -450,8 +471,8 @@ class ConcurrentHashMap
             pairs = new KVpair[size];
             for (size_t i = 0; i < size; i++)
             {
-                pairs[i].key.store(TOMBSTONE);
-                pairs[i].value.store(TOMBSTONE);
+                pairs[i].key.store(NULL);
+                pairs[i].value.store(NULL);
             }
             len = size;
             return;
@@ -506,12 +527,15 @@ public:
     // Constructors.
     ConcurrentHashMap()
     {
-        ConcurrentHashMap(Table::MIN_SIZE);
+        //ConcurrentHashMap(Table::MIN_SIZE);
+        Table *newTable = new Table(Table::MIN_SIZE);
+        table.store(newTable);
         return;
     }
     ConcurrentHashMap(size_t size)
     {
-        table.store(new Table(size));
+        Table *newTable = new Table(size);
+        table.store(newTable);
         return;
     }
 
@@ -568,7 +592,7 @@ public:
     {
         assert(newVal != NULL);
         assert(oldVal != NULL);
-        Value retVal = putIfMatch(table, key, newVal, oldVal);
+        Value retVal = putIfMatch(table.load(), key, newVal, oldVal);
         assert(!IS_MARKED(retVal, 0));
         assert(retVal != NULL);
         return retVal == TOMBSTONE ? NULL : retVal;
@@ -632,7 +656,7 @@ public:
 
                 // Key may only be partially copied.
                 // Finish the copy and retry.
-                return getImpl(table->chm.copySlotAndCheck(table, idx, key == NULL), key, fullHash);
+                return getImpl(table->chm.copySlotAndCheck(this, table, idx, key == NULL), key, fullHash);
             }
 
             // If we have exceeded our reprobe limit.
@@ -659,7 +683,7 @@ public:
     }
 
     // Called by most put functions. This one does the heavy lifting.
-    static Value putIfMatch(Table *table, Key key, Value newVal, Value oldVal)
+    Value putIfMatch(Table *table, Key key, Value newVal, Value oldVal)
     {
         assert(newVal != NULL);
         assert(!IS_MARKED(newVal, 0));
@@ -675,8 +699,8 @@ public:
         while (true)
         {
             // Get the key and value in the current slot.
-            Key K = table->key(idx);
-            Value V = table->value(idx);
+            K = table->key(idx);
+            V = table->value(idx);
 
             // If the slot is free.
             if (K == NULL)
@@ -721,7 +745,7 @@ public:
                 K == TOMBSTONE)
             {
                 // Resize the table.
-                newTable = table->chm.resize(table);
+                newTable = table->chm.resize(this, table);
                 // Help copy over an existing value.
                 // If we are attempting to replace the value without concern for the old value, we don't have to bother with this.
                 // In practice, we only ignore this within an existing migration.
@@ -753,14 +777,14 @@ public:
              IS_MARKED(V, 0)))
         {
             // Force the table copy to start.
-            newTable = table->chm.resize(table);
+            newTable = table->chm.resize(this, table);
         }
 
         // If a new table is allocated.
         if (newTable != NULL)
         {
             // Copy the slot and retry in the new table.
-            return putIfMatch(table->chm.copySlotAndCheck(table, idx, oldVal == NULL), key, newVal, oldVal);
+            return this->putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == NULL), key, newVal, oldVal);
         }
 
         // Update the existing table.
@@ -802,7 +826,7 @@ public:
                         table->chm.size.fetch_add(1);
                     }
                     // If we removed a non-NULL and non-tombstone value with a tombstone.
-                    if (!(V == NULL || V == TOMBSTONE) && newVal == TOMBSTONE)
+                    else if (!(V == NULL || V == TOMBSTONE) && newVal == TOMBSTONE)
                     {
                         table->chm.size.fetch_add(-1);
                     }
@@ -820,24 +844,34 @@ public:
             // If a primed value was placed, re-run put on the new table.
             if (IS_MARKED(V, 0))
             {
-                return putIfMatch(table->chm.copySlotAndCheck(table, idx, oldVal == NULL), key, newVal, oldVal);
+                return putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == NULL), key, newVal, oldVal);
             }
         }
     }
 
     // Help to perform table migration, likely being assigned some range of values.
     // TODO: I have decided to assume the helper is always the top level table. This may not always be true.
-    static Table *helpCopy(Table *helper)
+    Table *helpCopy(Table *helper)
     {
-        Table *topTable = helper; //table.load();
+        Table *topTable = this->table.load();
 
         // If there is no copy in progress, then there's nothing to be done here.
         if (topTable->chm.newTable.load() == nullptr)
         {
             return helper;
         }
-        topTable->chm.helpCopyImpl(topTable, false);
+        topTable->chm.helpCopyImpl(this, topTable, false);
         return helper;
+    }
+
+    void print()
+    {
+        Table *topTable = table.load();
+        size_t len = topTable->len;
+        for (size_t i = 0; i < len; i++)
+        {
+            std::cout << topTable->key(i) << "\t" << topTable->value(i) << std::endl;
+        }
     }
 };
 

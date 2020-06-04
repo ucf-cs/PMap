@@ -15,7 +15,7 @@
 #include "define.hpp"
 #include "hashMap.hpp"
 
-ConcurrentHashMap<void *, void *> hashMap;
+ConcurrentHashMap<void *, void *> *hashMap;
 
 void threadRunner(std::thread *threads, void function(int threadNum));
 
