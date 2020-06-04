@@ -4,11 +4,11 @@ A persistent concurrent hash map
 ## How to build and run
 This code has been written to build and run in a Linux environment. In particular, it uses a Linux-specific header library to set thread priority and affinity. All testing was done on Ubuntu 18.04.4 LTS. 
 
-Before building the code, set the number of threads (`THREAD_COUNT`) to use and the number of operations (`NUM_OPS`) to perform by modifying the definitions in `define.hpp`. These can be adjusted and the code rebuilt as needed.
+Before building the code, set the number of threads (`THREAD_COUNT`) to use and the number of operations (`NUM_OPS`) to perform by modifying the definitions in `define.hpp`. These can be adjusted and the code rebuilt as needed. By default, the testing framework will run an even distribution of operations after prefilling with 50% of `NUM_OPS`. 
 
 To compile the code, run the following command using GCC:
 
-`g++ -std=c++17 -pthread -march=native -Ofast -flto main.cpp`
+`g++ -std=c++17 -pthread main.cpp`
 
 This will prodice a program named `a.out`. You can run this code with the following command:
 
