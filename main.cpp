@@ -121,10 +121,10 @@ int main(void)
     // Get end time.
     auto finish = std::chrono::high_resolution_clock::now();
 
+    hashMap->print();
+    std::cout << "\n";
     std::cout << std::chrono::duration_cast<std::chrono::TIME_UNIT>(finish - start).count();
     std::cout << "\n";
-
-    hashMap->print();
 
     return 0;
 }
