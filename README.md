@@ -4,7 +4,7 @@ A persistent concurrent hash map
 ## How to build and run
 This code has been written to build and run in a Linux environment. In particular, it uses a Linux-specific header library to set thread priority and affinity. All testing was done on Ubuntu 18.04.4 LTS. 
 
-Before building the code, set the number of threads (`THREAD_COUNT`) to use and the number of operations (`NUM_OPS`) to perform by modifying the definitions in `define.hpp`. These can be adjusted and the code rebuilt as needed. By default, the testing framework will run an even distribution of operations after prefilling with 50% of `NUM_OPS`. 
+Before building the code, set the number of threads (`THREAD_COUNT`) to use and the number of operations (`NUM_OPS`) to perform by modifying the definitions in `define.hpp`. These can be adjusted and the code rebuilt as needed. By default, the testing framework will run an even distribution of operations after prefilling with 50% of `NUM_OPS * THREAD_COUNT`. 
 
 To compile the code, run the following command using GCC:
 
@@ -18,3 +18,6 @@ The program outputs the full contents of the hash table, followed by the program
 
 ## Project state
 This project currently uses an implementation of *A Lock-Free Wait-Free Hash Table* by Cliff Click. It uses xxhash as a fast hashing algorithm. It performs basic size, isEmpty, containsKey, put, putIfAbsent, remove, and replace operations in the benchmark. The design presently uses linear probing and offers no persistence. The next step of this project is to add efficient KCAS support. From there, lock-free hopscotch hashing can be added. After that, KCAS can be replaced with an implementation of PMwCAS. Detailed references to these components can be found in the comments at the top of `hashMap.hpp`. 
+
+Needs implementation of update operation. 
+Currently restricted to pointer keys and values, though we want to support any 64-bit type ideally. 
