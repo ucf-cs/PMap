@@ -55,16 +55,19 @@ class ConcurrentHashMap
     // Hash function.
     static size_t hash(Key key)
     {
+        // xxhash hashing.
         std::array<Key, 1> input{key};
         xxh::hash_t<64> hash = xxh::xxhash<64>(input);
 
+        // C++ standard library hashing.
         //size_t hash = hasher(key);
 
+        // hash=key naive hashing.
         //size_t hash = (size_t)key;
 
+        // Debug to determine what hashes we are generating.
         //std::cout << hash << std::endl;
 
-        // TODO: Is this implcit cast safe to do? I know that I'm getting a 32-bit hash back.
         return ((size_t)hash);
     }
 
@@ -143,6 +146,8 @@ class ConcurrentHashMap
                 {
                     // TODO: Record the last resize here.
                     //hashMap->lastResize = std::chrono::high_resolution_clock::now();
+
+                    // TODO: Determine when it is safe to deallocate the old table(s).
                 }
                 return;
             }
@@ -165,7 +170,7 @@ class ConcurrentHashMap
                     // If there isn't a usable value to migrate, replace it with a tombprime. Otherwise, mark it.
                     Value mark = (oldVal == NULL || oldVal == TOMBSTONE) ? TOMBPRIME : SET_MARK(oldVal, 0);
                     // Attempt the CAS.
-                    Value actualVal = oldTable->CASvalue(idx, oldVal, mark);
+                    Value actualVal = CASvalue(oldTable, idx, oldVal, mark);
                     // If we succeeded.
                     if (actualVal == oldVal)
                     {
@@ -205,11 +210,11 @@ class ConcurrentHashMap
 
                 // Now that the value has been migrated, replace the old table value with a tombstone.
                 // This will prevent other threads from redundantly attempting to copy to the new table.
-                Value actualVal = oldTable->CASvalue(idx, oldVal, TOMBPRIME);
+                Value actualVal = CASvalue(oldTable, idx, oldVal, TOMBPRIME);
                 while (actualVal != oldVal)
                 {
                     oldVal = actualVal;
-                    actualVal = oldTable->CASvalue(idx, oldVal, TOMBPRIME);
+                    actualVal = CASvalue(oldTable, idx, oldVal, TOMBPRIME);
                 }
                 // Return whether or not we made progress (copied a value from the old table to the new table).
                 return copiedIntoNew;
@@ -438,8 +443,7 @@ class ConcurrentHashMap
                     //     return;
                     // }
                 }
-                // An extra promotion check in case some thread got stalled while promoting.
-                // TODO: Really a waste if we have confidence that our asserts will succeed.
+                // Try to promote the hashtable anyway, in case another thread stalled during the promotion phase.
                 copyCheckAndPromote(hashMap, oldTable, 0);
                 return;
             }
@@ -503,11 +507,11 @@ class ConcurrentHashMap
             return oldKeyRef;
         }
         // Function to CAS a value.
-        Value CASvalue(size_t idx, Value oldValue, Value newValue)
+        static Value CASvalue(Table *table, size_t idx, Value oldValue, Value newValue)
         {
-            assert(idx < len);
+            assert(idx < table->len);
             Key oldValueRef = oldValue;
-            pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
+            table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
             return oldValueRef;
         }
     };
@@ -586,7 +590,13 @@ public:
         return (putIfMatch(key, newValue, oldValue) == oldValue);
     }
 
+    // Accept an arbitrary function to replace the use of standard CAS.
+    // Enables more complex logic by allowing the new value to adapt based on the actual old value.
     // TODO: Implement an update method.
+    Value update(Key key, Value newValue, Value function())
+    {
+        return NULL;
+    }
 
     Value putIfMatch(Key key, Value newVal, Value oldVal)
     {
@@ -723,7 +733,7 @@ public:
                     table->chm.slots.fetch_add(1);
                     break;
                 }
-                // CAS failed. Try again.
+                // CAS failed. May need to try again.
                 else
                 {
                     // Update the expected key with what was actually found during the CAS.
@@ -772,7 +782,7 @@ public:
         // Consider allocating a newer table for placement.
         // If a new table hasn't already been allocated.
         if (newTable == NULL &&
-            // And we are trying to remove the value and the table is full.
+            // And we are doing a fresh key insert while the table is nearly full.
             ((V == NULL && table->chm.tableFull(reprobeCount, len)) ||
              // Or our value is primed.
              IS_MARKED(V, 0)))
@@ -813,7 +823,8 @@ public:
             }
 
             // Atomically update the value.
-            Value actualValue = table->CASvalue(idx, V, newVal);
+            // TODO: Replace this with an arbitrary CAS function to be passed in.
+            Value actualValue = Table::CASvalue(table, idx, V, newVal);
             // If we succeeded.
             if (actualValue == V)
             {
@@ -838,15 +849,15 @@ public:
             // CAS failed.
             else
             {
-
                 // Update the value with what we found during the failed CAS.
                 V = actualValue;
             }
-            // If a primed value was placed, re-run put on the new table.
-            if (IS_MARKED(V, 0))
+            // If a primed value was is present (placed by us or someone else), re-run put on the new table.
+            if (IS_MARKED(table->value(idx), 0))
             {
                 return putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == NULL), key, newVal, oldVal);
             }
+            // Otherwise retry our put.
         }
     }
 
@@ -871,18 +882,39 @@ public:
         size_t len = topTable->len;
         for (size_t i = 0; i < len; i++)
         {
-            std::cout << topTable->key(i) << "\t" << topTable->value(i) << std::endl;
+
+            Key key = topTable->key(i);
+            Value value = topTable->value(i);
+            // TODO: Try to make this pretty-printing of sentinels actually work.
+            std::cout << ((void *)key == MATCH_ANY ? "MATCH_ANY" : ((void *)key == NO_MATCH_OLD ? "NO_MATCH_OLD" : ((void *)key == TOMBSTONE ? "TOMBSTONE" : ((void *)key == TOMBPRIME ? "TOMBPRIME" : key)))) << "\t" << ((void *)value == MATCH_ANY ? "MATCH_ANY" : ((void *)value == NO_MATCH_OLD ? "NO_MATCH_OLD" : ((void *)value == TOMBSTONE ? "TOMBSTONE" : ((void *)value == TOMBPRIME ? "TOMBPRIME" : value)))) << "\n";
         }
+        std::cout << std::endl;
     }
 };
 
+// Initialization of sentinels.
 template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::MATCH_ANY = new char();
+void *ConcurrentHashMap<Key, Value>::MATCH_ANY = new size_t();
 template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::NO_MATCH_OLD = new char();
+void *ConcurrentHashMap<Key, Value>::NO_MATCH_OLD = new size_t();
 template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::TOMBSTONE = new char();
+void *ConcurrentHashMap<Key, Value>::TOMBSTONE = new size_t();
 template <typename Key, typename Value>
 void *ConcurrentHashMap<Key, Value>::TOMBPRIME = SET_MARK(TOMBSTONE, 0);
+
+// // Function to CAS a value.
+// template <class Key, class Value>
+// Value increment(ConcurrentHashMap<Key,Value>::Table *table, size_t idx, Value oldValue, Value newValue)
+// {
+//     assert(idx < table->len);
+//     Key oldValueRef = oldValue;
+
+//     // Our actual new value here is dependent on the old value.
+//     newValue=oldValue+newValue;
+
+//     // Must be CAS rather than fetch_add because the old value might be a sentinel.
+//     table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
+//     return oldValueRef;
+// }
 
 #endif
