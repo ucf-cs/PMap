@@ -324,7 +324,10 @@ class ConcurrentHashMap
                 // Disallow shrinking the table.
                 if (newSize < oldLen)
                 {
-                    newSize = oldLen;
+                    //newSize = oldLen;
+                    // Always enforce a larger table upon resize.
+                    // For some reason, without this, we are getting stuck in a loop of resizing (to the same size) then failing to insert, repeating in a vicious cycle.
+                    newSize = oldLen*2;
                 }
 
                 // Compute log2 of newSize.
