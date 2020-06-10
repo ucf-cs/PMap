@@ -42,7 +42,7 @@ void performOps(int threadNum)
     for (size_t i = 0; i < NUM_OPS; i++)
     {
         // Choose a random object from the pool.
-        size_t index = rand() % (THREAD_COUNT * NUM_OPS);
+        size_t index = rand() % PTR_POOL_SIZE;
         void *ptr = &pointerPool[index];
         assert((uintptr_t)ptr % 8 == 0);
         // TODO: Consider not performing rand() on the threads, and instead pre-calculate them.
@@ -67,7 +67,8 @@ void performOps(int threadNum)
             hashMap->remove(ptr);
             break;
         case 6:
-            hashMap->replace(ptr, ptr, ptr);
+            void *newPtr = &pointerPool[rand() % PTR_POOL_SIZE];
+            hashMap->replace(ptr, ptr, newPtr);
             break;
         }
     }
@@ -81,7 +82,7 @@ void preinsert(int threadNum)
         // 50% prefill.
         if (rand() % 2)
         {
-            void *address = new char();
+            void *address = &pointerPool[rand() % PTR_POOL_SIZE];
             hashMap->put(address, address);
             //std::cout << std::endl;
             //hashMap->print();

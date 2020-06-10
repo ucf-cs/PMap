@@ -20,7 +20,7 @@
 ConcurrentHashMap<void *, void *> *hashMap;
 // Create a pool of valid pointers.
 // Threads can and should share these, to encourage overlaps.
-size_t pointerPool[THREAD_COUNT * NUM_OPS];
+size_t pointerPool[PTR_POOL_SIZE];
 
 void threadRunner(std::thread *threads, void function(int threadNum));
 
