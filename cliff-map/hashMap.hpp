@@ -84,6 +84,15 @@ class ConcurrentHashMap
     // Primed tombstone. Marked to prevent any updates to the location, used for resizing.
     static void *TOMBPRIME;
 
+    // Heuristics for resizing.
+    // Consider a reprobes heuristic, or some alternative, to indicate when to resize and gather statistics on key distribution.
+    // TODO: Reprobes are a bit different with hopscotch hashing.
+    static size_t reprobeLimit(size_t len)
+    {
+        return REPROBE_LIMIT + (len >> 2);
+    }
+
+public:
     // A single table.
     // Multiple tables can exist at a time during resizing.
     class Table
@@ -130,7 +139,6 @@ class ConcurrentHashMap
 
             void copyCheckAndPromote(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, size_t workDone)
             {
-                // TODO: Consider removing some of these non-essential variables once we have done more testing.
                 assert(&(oldTable->chm) == this);
                 size_t oldLen = oldTable->len;
                 size_t copyDone = this->copyDone.load();
@@ -229,7 +237,7 @@ class ConcurrentHashMap
             // If this number gets too large, consider resizing.
             std::atomic<size_t> slots;
 
-            // A new table.
+            // A table.
             // All values in the current table must migrate here before deallocating the current table.
             std::atomic<Table *> newTable;
             bool CASNewTable(Table *newTable)
@@ -327,7 +335,7 @@ class ConcurrentHashMap
                     //newSize = oldLen;
                     // Always enforce a larger table upon resize.
                     // For some reason, without this, we are getting stuck in a loop of resizing (to the same size) then failing to insert, repeating in a vicious cycle.
-                    newSize = oldLen*2;
+                    newSize = oldLen * 2;
                 }
 
                 // Compute log2 of newSize.
@@ -335,7 +343,7 @@ class ConcurrentHashMap
 
                 // Limit the number of resizers.
                 // We do this by "taking a number" to see how many are already working on it.
-                size_t r = resizersCount.fetch_add(1);
+                // size_t r = resizersCount.fetch_add(1);
                 // TODO: Wait for a bit if there are at least 2 threads already trying to resize.
 
                 // Check one last time to make sure the table has not yet been allocated.
@@ -407,7 +415,6 @@ class ConcurrentHashMap
                         while (copyIdx < (oldLen << 1) &&
                                !this->copyIdx.compare_exchange_strong(copyIdx, copyIdx + MIN_COPY_WORK))
                         {
-                            // TODO: Shouldn't have to load here explicitly.
                             copyIdx = this->copyIdx.load();
                         }
                         // Panic if the threads have collectively attempted to copy the table twice, yet the work still isn't done.
@@ -517,20 +524,25 @@ class ConcurrentHashMap
             table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
             return oldValueRef;
         }
+
+        // Function to increment a value.
+        static Value increment(Table *table, size_t idx, Value oldValue, Value newValue)
+        {
+            assert(idx < table->len);
+            Key oldValueRef = oldValue;
+            if (oldValue == NULL || oldValue == TOMBSTONE)
+            {
+                oldValue = 0;
+            }
+            // Our actual new value here is dependent on the old value.
+            // TODO: This casting is currently a hack to allow the code to compile even when Value is of type void*.
+            newValue = (void *)((long)oldValue + (long)newValue);
+            // Must be CAS rather than FAA because the old value might be a sentinel.
+            table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
+            return oldValueRef;
+        }
     };
 
-    // The structure that stores the top table.
-    std::atomic<Table *> table;
-
-    // Heuristics for resizing.
-    // Consider a reprobes heuristic, or some alternative, to indicate when to resize and gather statistics on key distribution.
-    // TODO: Reprobes are a bit different with hopscotch hashing.
-    static size_t reprobeLimit(size_t len)
-    {
-        return REPROBE_LIMIT + (len >> 2);
-    }
-
-public:
     // Constructors.
     ConcurrentHashMap()
     {
@@ -595,17 +607,16 @@ public:
 
     // Accept an arbitrary function to replace the use of standard CAS.
     // Enables more complex logic by allowing the new value to adapt based on the actual old value.
-    // TODO: Implement an update method.
-    Value update(Key key, Value newValue, Value function())
+    Value update(Key key, Value value, Value function(Table *table, size_t idx, Value oldValue, Value newValue))
     {
-        return NULL;
+        return putIfMatch(key, value, NO_MATCH_OLD, function);
     }
 
-    Value putIfMatch(Key key, Value newVal, Value oldVal)
+    Value putIfMatch(Key key, Value newVal, Value oldVal, Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
         assert(newVal != NULL);
         assert(oldVal != NULL);
-        Value retVal = putIfMatch(table.load(), key, newVal, oldVal);
+        Value retVal = putIfMatch(table.load(), key, newVal, oldVal, CAS);
         assert(!IS_MARKED(retVal, 0));
         // TODO: Can we safely ignore this?
         //assert(retVal != NULL);
@@ -697,7 +708,8 @@ public:
     }
 
     // Called by most put functions. This one does the heavy lifting.
-    Value putIfMatch(Table *table, Key key, Value newVal, Value oldVal)
+    Value putIfMatch(Table *table, Key key, Value newVal, Value oldVal,
+                     Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
         assert(newVal != NULL);
         assert(!IS_MARKED(newVal, 0));
@@ -827,7 +839,7 @@ public:
 
             // Atomically update the value.
             // TODO: Replace this with an arbitrary CAS function to be passed in.
-            Value actualValue = Table::CASvalue(table, idx, V, newVal);
+            Value actualValue = CAS(table, idx, V, newVal);
             // If we succeeded.
             if (actualValue == V)
             {
@@ -893,6 +905,10 @@ public:
         }
         std::cout << std::endl;
     }
+
+private:
+    // The structure that stores the top table.
+    std::atomic<Table *> table;
 };
 
 // Initialization of sentinels.
@@ -904,20 +920,5 @@ template <typename Key, typename Value>
 void *ConcurrentHashMap<Key, Value>::TOMBSTONE = new size_t();
 template <typename Key, typename Value>
 void *ConcurrentHashMap<Key, Value>::TOMBPRIME = SET_MARK(TOMBSTONE, 0);
-
-// // Function to CAS a value.
-// template <class Key, class Value>
-// Value increment(ConcurrentHashMap<Key,Value>::Table *table, size_t idx, Value oldValue, Value newValue)
-// {
-//     assert(idx < table->len);
-//     Key oldValueRef = oldValue;
-
-//     // Our actual new value here is dependent on the old value.
-//     newValue=oldValue+newValue;
-
-//     // Must be CAS rather than fetch_add because the old value might be a sentinel.
-//     table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
-//     return oldValueRef;
-// }
 
 #endif

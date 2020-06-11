@@ -67,8 +67,11 @@ void performOps(int threadNum)
             hashMap->remove(ptr);
             break;
         case 6:
-            void *newPtr = &pointerPool[rand() % PTR_POOL_SIZE];
-            hashMap->replace(ptr, ptr, newPtr);
+            hashMap->replace(ptr, ptr, &pointerPool[rand() % PTR_POOL_SIZE]);
+            break;
+        case 7:
+            // Not a meaningful case, since we are currently working with pointers, not ints.
+            hashMap->update(ptr, ptr, ConcurrentHashMap<void *, void *>::Table::increment);
             break;
         }
     }
