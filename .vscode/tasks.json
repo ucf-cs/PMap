@@ -7,7 +7,7 @@
             "label": "Build",
             "type": "shell",
             //"command": "g++ -std=c++17 -pthread -march=native -O3 -flto main.cpp",
-            "command": "g++ -std=c++17 -pthread -g2 main.cpp",
+            "command": "g++ -std=c++17 -pthread -g2 cliff-map/main.cpp",
             "group": {
                 "kind": "build",
                 "isDefault": true
