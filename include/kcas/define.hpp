@@ -1,9 +1,8 @@
 #ifndef DEFINE_hpp
 #define DEFINE_hpp
 
-#include <assert.h>
-
 #include <atomic>
+#include <cassert>
 #include <cstddef>
 #include <iostream>
 #include <set>

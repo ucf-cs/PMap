@@ -8,7 +8,7 @@
 #define K 16
 
 PMwCASManager<uintptr_t, K> *pmwcas;
-alignas(64) PMwCASManager<uintptr_t, K>::Descriptor descriptors[NUM_OPS];
+alignas(64) PMwCASManager<uintptr_t, K>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
 
 // Input: 1- Array of threads that will execute a fucntion.
 //        2- A function pointer to that function.
@@ -48,8 +48,8 @@ void performOps(int threadNum)
 {
     for (size_t i = 0; i < NUM_OPS; i++)
     {
-        PMwCASManager<uintptr_t, K>::Descriptor *desc = &descriptors[i];
-        desc->status = PMwCASManager<uintptr_t, K>::Status::Undecided;
+        PMwCASManager<uintptr_t, K>::Descriptor *desc = &descriptors[i + NUM_OPS * threadNum];
+        desc->status.store(PMwCASManager<uintptr_t, K>::Status::Undecided);
         desc->count = rand() % K;
 
         // Determine the indexes to modify.
@@ -70,10 +70,19 @@ void performOps(int threadNum)
             // Avoid assigning an invalid, marked value.
             desc->words[j].newVal = rand() << 4;
             desc->words[j].mwcasDescriptor = desc;
-            assert(desc->words[j].mwcasDescriptor != NULL);
+            j++;
+        }
+
+        // Validate the descriptor.
+        assert((desc->status.load() == PMwCASManager<uintptr_t, K>::Status::Undecided));
+        assert(desc->count <= K);
+        for (size_t j = 0; j < desc->count; j++)
+        {
             assert(desc->words[j].address != NULL);
             assert((uintptr_t)desc->words[j].address > 100);
-            j++;
+            assert((uintptr_t)desc->words[j].address >= ((uintptr_t)&array[0]));
+            assert((uintptr_t)desc->words[j].address <= ((uintptr_t)&array[0] + (8 * ARRAY_SIZE)));
+            assert(desc->words[j].mwcasDescriptor == desc);
         }
 
         // Perform the insertion.

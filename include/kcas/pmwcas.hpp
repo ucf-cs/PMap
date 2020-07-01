@@ -1,8 +1,6 @@
 #ifndef PMwCAS_hpp
 #define PMwCAS_hpp
 
-#include <assert.h>
-
 #include <atomic>
 #include <cstddef>
 #include <chrono>
@@ -119,7 +117,7 @@ public:
 
         // Finalize the status of the PMwCAS, whether success or failure.
         Status expectedStatus = Undecided;
-        bool successDebug = md->status.compare_exchange_strong(expectedStatus, (Status)((uintptr_t)st | DirtyFlag));
+        md->status.compare_exchange_strong(expectedStatus, (Status)((uintptr_t)st | DirtyFlag));
         Status status = md->status.load();
         if ((uintptr_t)status & DirtyFlag)
         {
@@ -182,6 +180,18 @@ public:
     // Complete the RDCSS operation.
     void CompleteInstall(Word *wd)
     {
+        // Ensure the placement is valid.
+        bool valid = false;
+        for (size_t i = 0; i < wd->mwcasDescriptor->count; i++)
+        {
+            if (wd->mwcasDescriptor->words[i].address == wd->address)
+            {
+                valid = true;
+                break;
+            }
+        }
+        assert(valid);
+
         // Prepare to place the new value (a KCAS descriptor), marked initially as dirty and part of PMwCAS.
         T ptr = (T)((uintptr_t)wd->mwcasDescriptor | PMwCASFlag | DirtyFlag);
         // Determine whether we are placing the KCAS descriptor or restoring the old value.
