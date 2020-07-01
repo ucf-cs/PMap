@@ -38,12 +38,6 @@
 
 #include "xxhash.hpp"
 
-// Pointer marking.
-// Offset can be set from 0-2 to mark different bits.
-#define SET_MARK(_p, offset) (void *)((uintptr_t)_p | (uintptr_t)(1 << offset))
-#define CLR_MARK(_p, offset) (void *)((uintptr_t)_p & (uintptr_t) ~(1 << offset))
-#define IS_MARKED(_p, offset) (void *)((uintptr_t)_p & (uintptr_t)(1 << offset))
-
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 #define REPROBE_LIMIT 10
 
