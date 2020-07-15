@@ -1,7 +1,9 @@
 #ifndef PMwCAS_hpp
 #define PMwCAS_hpp
 
+#include <algorithm>
 #include <atomic>
+#include <cstdarg>
 #include <cstddef>
 #include <chrono>
 #include <utility>
@@ -9,14 +11,16 @@
 #include "define.hpp"
 
 #define SFENCE void __builtin_ia32_sfence(void)
+#define CLWB void _mm_clwb(void const *p);
+
+// TODO: OVERALL: Add support for descriptor reuse. This involves creating per-thread descriptors (KCAS and RDCSS descriptors) and accessing descriptor fields using custom read and CAS logic implemented in the Trevor Brown paper on descriptor reuse. One that work is done, the PMwCAS will be complete.
 
 // NOTE: T must not use the first 4 bits, and must not be larger than an atomic word.
 // Ex. 60-bit int shifted left.
 // Ex. pointer?
-template <class T, size_t K>
+template <class T, size_t K, size_t P>
 class PMwCASManager
 {
-    // TODO: Making everything public is a hack.
 public:
     static const uintptr_t DirtyFlag = 1;
     static const uintptr_t PMwCASFlag = 2;
@@ -27,21 +31,42 @@ public:
 
     // Forward declarations.
     struct Descriptor;
+    struct Word;
 
     enum Status
     {
-        // Avoid using the first 4 bits for our valid enum values.
+        // Avoid using the first 3 bits (4 in case I find a way to need all 4) for our valid enum values.
         Undecided = 16,
         Succeeded = 32,
         Failed = 64,
     };
+    // Descriptor reference.
+    // Used for descriptor reuse.
+    // TODO: Do some testing to confirm this is 64 bits and that bits are placed as expected.
+    struct DescRef
+    {
+        // Thread ID.
+        // can only address 2^width-1 threads.
+        unsigned int tid : 8;
+        // A sequence number to avoid the ABA problem.
+        unsigned int seq : 53;
+        // Reserved bits.
+        bool isRDCSS : 1;
+        bool isPMwCAS : 1;
+        bool isDirty : 1;
+    };
     // Word descriptor
     struct alignas(64) Word
     {
+        // TODO: Support multiple word types?
         std::atomic<T> *address;
         T oldVal;
         T newVal;
         Descriptor *mwcasDescriptor;
+        bool operator<(const Word &word) const
+        {
+            return ((uintptr_t)address < (uintptr_t)word.address);
+        }
     };
     // KCAS descriptor.
     struct alignas(64) Descriptor
@@ -50,18 +75,44 @@ public:
         size_t count;
         alignas(64) Word words[K];
     };
+    // Our descriptor pools.
+    Descriptor descriptors[P];
+    Word words[P * K];
+
+    // Fast sort for small arrays.
+    void insertionSortRecursive(size_t n, size_t *addresses, size_t *sorts)
+    {
+        if (n <= 0)
+        {
+            return;
+        }
+        insertionSortRecursive(n - 1, addresses, sorts);
+        size_t x = addresses[n];
+        size_t y = sorts[n];
+        size_t j = n - 1;
+        while (j >= 0 && addresses[j] > x)
+        {
+            addresses[j + 1] = addresses[j];
+            sorts[j + 1] = sorts[j];
+        }
+        addresses[j + 1] = x;
+        sorts[j + 1] = y;
+        return;
+    }
+
     // Perform a persistent, multi-word CAS based on a descriptor pointer.
     bool PMwCAS(Descriptor *md)
     {
         //assert(((uintptr_t)md & ~AddressMask) == 0);
         // The status of our KCAS. Defaults to success unless changed.
         Status st = Succeeded;
-        // TODO: Must operates in fixed address traversal order.
-        // For now, we will assume the appropriate order was used when the descriptor was made.
+        // Must operate in a fixed address traversal order.
+        // We will assume the appropriate order was used when the descriptor was made.
         for (size_t i = 0; i < md->count; i++)
         {
         retry:
             // Create a new word descriptor, so we can make sure the reference doesn't change from under it.
+            // TODO: Reference the word descriptor that already exists in the MwDescriptor instead.
             Word *wd = new Word();
             assert((uintptr_t)wd % 64 == 0);
             wd->address = md->words[i].address;
@@ -70,7 +121,6 @@ public:
             wd->mwcasDescriptor = md->words[i].mwcasDescriptor;
             assert(wd->mwcasDescriptor != NULL);
             assert(wd->address != NULL);
-            // TODO: Until descriptor reuse is implemented, this is a memory leak.
 
             // Attempt to place the descriptor using RDCSS.
             T rval = InstallMwCASDescriptor(wd, md);
@@ -121,7 +171,7 @@ public:
         Status status = md->status.load();
         if ((uintptr_t)status & DirtyFlag)
         {
-            PMwCASManager<Status, K>::persist(&(md->status), status);
+            PMwCASManager<Status, K, P>::persist(&(md->status), status);
         }
 
         // Install the final values.
@@ -149,6 +199,87 @@ public:
         // Return our final success (or failure).
         return (md->status.load() == Succeeded);
     }
+    // Used to hide descriptor construction.
+    // Format: address, oldVal, newVal
+    bool PMwCAS(size_t threadNum, size_t size, Word *words)
+    {
+        // Sort the words.
+        std::sort(words, words + size);
+        // TODO: Make sure they are sorted correctly.
+
+        // Get the current thread's descriptor.
+        // TODO: Switch this to descriptor reuse.
+        Descriptor *desc = new Descriptor(); // descriptors[threadNum];
+
+        // Construct the descriptor.
+        desc->status = Undecided;
+        desc->count = size;
+        for (size_t i = 0; i < size; i++)
+        {
+            // TODO: Ensure all values copy over properly.
+            desc->words[i] = words[i];
+            desc->words[i].mwcasDescriptor = desc;
+        }
+
+        // Validate the descriptor.
+        assert((desc->status.load() == Undecided));
+        assert(desc->count <= K);
+        for (size_t j = 0; j < desc->count; j++)
+        {
+            assert(desc->words[j].address != NULL);
+            assert((uintptr_t)desc->words[j].address > 100);
+            assert((uintptr_t)desc->words[j].address >= ((uintptr_t)&array[0]));
+            assert((uintptr_t)desc->words[j].address <= ((uintptr_t)&array[0] + (8 * ARRAY_SIZE)));
+            assert(desc->words[j].mwcasDescriptor == desc);
+        }
+
+        // Run PMwCAS on our generated descriptor.
+        return PMwCAS(desc);
+    }
+    // Attempt to read an address.
+    // We must ensure all flag conditions have been handled before reading the address.
+    T PMwCASRead(std::atomic<T> *address)
+    {
+    retry:
+        // Read the value.
+        T v = address->load();
+        // If it's part of an RDCSS.
+        if ((uintptr_t)v & RDCSSFlag)
+        {
+            // Finish the RDCSS.
+            CompleteInstall((Word *)((uintptr_t)v & AddressMask));
+            // And try to read it again.
+            goto retry;
+        }
+        // If the value has not been persisted.
+        if ((uintptr_t)v & DirtyFlag)
+        {
+            // Persist it.
+            persist(address, v);
+            // And remove that mark.
+            v = (uintptr_t)v & ~DirtyFlag;
+        }
+        // If the value is part of a PMwCAS.
+        if ((uintptr_t)v & PMwCASFlag)
+        {
+            // Help complete the KCAS.
+            PMwCAS((Descriptor *)((uintptr_t)v & AddressMask));
+            // And try to read it again.
+            goto retry;
+        }
+        // Return the final value read.
+        return v;
+    }
+    // Flush and fence the data stored in the address, then unflag the dirty bit atomically.
+    static T persist(std::atomic<T> *address, T value)
+    {
+        CLWB(address);
+        SFENCE;
+        address->compare_exchange_strong(value, (T)((uintptr_t)value & ~DirtyFlag));
+        return value;
+    }
+
+private:
     // Use RDCSS to replace a value with a descriptor.
     // Pass the word descriptor by reference.
     T InstallMwCASDescriptor(Word *wd, Descriptor *md)
@@ -200,49 +331,6 @@ public:
         T expected = (T)((uintptr_t)wd | RDCSSFlag);
         wd->address->compare_exchange_strong(expected, u ? ptr : wd->oldVal);
         return;
-    }
-    // Attempt to read an address.
-    // We must ensure all flag conditions have been handled before reading the address.
-    T PMwCASRead(std::atomic<T> *address)
-    {
-    retry:
-        // Read the value.
-        T v = address->load();
-        // If it's part of an RDCSS.
-        if ((uintptr_t)v & RDCSSFlag)
-        {
-            // Finish the RDCSS.
-            CompleteInstall((Word *)((uintptr_t)v & AddressMask));
-            // And try to read it again.
-            goto retry;
-        }
-        // If the value has not been persisted.
-        if ((uintptr_t)v & DirtyFlag)
-        {
-            // Persist it.
-            persist(address, v);
-            // And remove that mark.
-            v = (uintptr_t)v & ~DirtyFlag;
-        }
-        // If the value is part of a PMwCAS.
-        if ((uintptr_t)v & PMwCASFlag)
-        {
-            // Help complete the KCAS.
-            PMwCAS((Descriptor *)((uintptr_t)v & AddressMask));
-            // And try to read it again.
-            goto retry;
-        }
-        // Return the final value read.
-        return v;
-    }
-    // Flush and fence the data stored in the address, then unflag the dirty bit atomically.
-    static T persist(std::atomic<T> *address, T value)
-    {
-        // TODO: Implement CLWB
-        //CLWB(address);
-        SFENCE;
-        address->compare_exchange_strong(value, (T)((uintptr_t)value & ~DirtyFlag));
-        return value;
     }
 };
 

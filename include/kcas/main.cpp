@@ -7,8 +7,8 @@
 
 #define K 16
 
-PMwCASManager<uintptr_t, K> *pmwcas;
-alignas(64) PMwCASManager<uintptr_t, K>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
+PMwCASManager<uintptr_t, K, THREAD_COUNT> *pmwcas;
+alignas(64) PMwCASManager<uintptr_t, K, THREAD_COUNT>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
 
 // Input: 1- Array of threads that will execute a fucntion.
 //        2- A function pointer to that function.
@@ -48,45 +48,38 @@ void performOps(int threadNum)
 {
     for (size_t i = 0; i < NUM_OPS; i++)
     {
-        PMwCASManager<uintptr_t, K>::Descriptor *desc = &descriptors[i + NUM_OPS * threadNum];
-        desc->status.store(PMwCASManager<uintptr_t, K>::Status::Undecided);
-        desc->count = rand() % K;
+        // A words array. Place words to modify here.
+        PMwCASManager<uintptr_t, K, THREAD_COUNT>::Word words[K];
+
+        // The number of words we will modify.
+        size_t count = rand() % K;
 
         // Determine the indexes to modify.
-        std::set<size_t> indexes;
+        std::unordered_set<size_t> indexes;
         // Keep getting more indexes until we have all that we need.
-        while (indexes.size() < desc->count)
+        while (indexes.size() < count)
         {
             size_t index = rand() % ARRAY_SIZE;
             indexes.insert(index);
         }
 
+        // Fill in the words.
         size_t j = 0;
-        // Pulling from the list in order ensures fixed traversal.
         for (auto &&index : indexes)
         {
-            desc->words[j].address = &array[index];
-            desc->words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
-            // Avoid assigning an invalid, marked value.
-            desc->words[j].newVal = rand() << 4;
-            desc->words[j].mwcasDescriptor = desc;
+            // We choose an index of the array to modify, which was selected at random.
+            words[j].address = &array[index];
+            // Read the current value at that index.
+            // If it doesn't match, it fails.
+            words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
+            // Pick a new value at random.
+            // By keeping the last 4 bits at 0, we avoid assigning an invalid, marked value.
+            words[j].newVal = rand() << 4;
             j++;
         }
 
-        // Validate the descriptor.
-        assert((desc->status.load() == PMwCASManager<uintptr_t, K>::Status::Undecided));
-        assert(desc->count <= K);
-        for (size_t j = 0; j < desc->count; j++)
-        {
-            assert(desc->words[j].address != NULL);
-            assert((uintptr_t)desc->words[j].address > 100);
-            assert((uintptr_t)desc->words[j].address >= ((uintptr_t)&array[0]));
-            assert((uintptr_t)desc->words[j].address <= ((uintptr_t)&array[0] + (8 * ARRAY_SIZE)));
-            assert(desc->words[j].mwcasDescriptor == desc);
-        }
-
         // Perform the insertion.
-        bool success = pmwcas->PMwCAS(desc);
+        bool success = pmwcas->PMwCAS(threadNum, count, words);
         if (success)
         {
             std::cout << "Succeeded on operation " << i << " on thread " << threadNum << std::endl;
@@ -122,7 +115,7 @@ int main(void)
     // Create our threads.
     std::thread threads[THREAD_COUNT];
 
-    pmwcas = new PMwCASManager<uintptr_t, K>();
+    pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>();
 
     // Get start time.
     auto start = std::chrono::high_resolution_clock::now();
