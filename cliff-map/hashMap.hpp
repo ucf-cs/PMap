@@ -36,7 +36,18 @@
 #include <iostream>
 #include <utility>
 
+// Fast hashing library.
 #include "xxhash.hpp"
+
+// mmap.
+#include <sys/mman.h>
+#include <cstdio>
+#include <cstdlib>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <errno.h>
 
 // Pointer marking.
 // Offset can be set from 0-2 to mark different bits.
@@ -96,6 +107,13 @@ class ConcurrentHashMap
     }
 
 public:
+    // A key value pair.
+    // Using this struct enables adjacent placement of the keys and values in memory.
+    typedef struct KVpair
+    {
+        std::atomic<Key> key;
+        std::atomic<Value> value;
+    } KVpair;
     // A single table.
     // Multiple tables can exist at a time during resizing.
     class Table
@@ -163,11 +181,6 @@ public:
                        slots.load() >= REPROBE_LIMIT + (len / 4);
             }
         };
-        typedef struct KVpair
-        {
-            std::atomic<Key> key;
-            std::atomic<Value> value;
-        } KVpair;
         // NOTE: Hashes are only needed if pointer comparison is insuccicient for comparison, so we don't use it in this implementation.
         // Keys and values.
         KVpair *pairs;
@@ -186,7 +199,8 @@ public:
             assert(tableCapacity % 2 == 0);
             assert(tableCapacity >= MIN_SIZE);
             new (&chm) CHM(tableCapacity, existingSize);
-            pairs = new KVpair[tableCapacity];
+            // NOTE: We assume our pairs have already been memory mapped by this point.
+            assert(pairs != NULL);
             for (size_t i = 0; i < tableCapacity; i++)
             {
                 // Initialize these to a default, reserved value.
@@ -198,7 +212,6 @@ public:
         }
         ~Table()
         {
-            delete[] pairs;
             return;
         }
         // Function to get a key at an index.
@@ -248,18 +261,80 @@ public:
         }
     };
 
-    // Constructors.
-    ConcurrentHashMap()
+    // Constructor.
+    ConcurrentHashMap(size_t size = Table::MIN_SIZE)
     {
-        //ConcurrentHashMap(Table::MIN_SIZE);
-        Table *newTable = new Table(Table::MIN_SIZE, 0);
-        table.store(newTable);
+        // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
+        char fileName[] = "./table.bin";
+        // This will hold the file descriptor of our memory mapped file.
+        int fd = -1;
+        // This will hold the memory address of our memory mapped table.
+        void *address;
+        // Try to open an existing hash table.
+        fd = open(fileName, O_RDONLY);
+        // If we succeeded, just map the existing data.
+        if (fd != -1)
+        {
+            // // Used to store file information.
+            // struct stat finfo;
+            // // Get existing file size.
+            // if (fstat(fd, &finfo) == -1)
+            // {
+            //     // error
+            //     fprintf(stderr, "Failed to read the existing file's size.\n");
+            // }
+            // size_t length = finfo.st_size;
+            size_t length = sizeof(Table) + (sizeof(KVpair) * size);
+            // Map the file.
+            address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if (address == -1)
+            {
+                // error
+                fprintf(stderr, "Failed to mmap the existing file. errno %d\n", errno);
+            }
+            // Assign the KV pairs.
+            ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
+        }
+        // If file doesn't exist yet. Try to make it.
+        else
+        {
+            // Create and open the file.
+            fd = open(fileName, O_RDWR | O_CREAT);
+            if (fd == -1)
+            {
+                // error
+                fprintf(stderr, "Failed to create or open the file.\n");
+            }
+            // Allocate enough space for the table and the KV pairs.
+            size_t length = sizeof(Table) + (sizeof(KVpair) * size);
+            // Truncate will actually extend the size of the file by filling with NULL.
+            if (ftruncate(fd, length) == -1)
+            {
+                // error
+                fprintf(stderr, "Failed to adjust file size.\n");
+            }
+            // Map the file.
+            address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            // Assign the KV pairs.
+            ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
+            // Placement new will allocate our table within the memory mapped region.
+            new (address) Table(size, 0);
+        }
+        // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
+        close(fd);
+        // Store this address as the table.
+        table.store((Table *)address);
         return;
     }
-    ConcurrentHashMap(size_t size)
+    ~ConcurrentHashMap()
     {
-        Table *newTable = new Table(size, 0);
-        table.store(newTable);
+        size_t size = table.load()->chm.size.load();
+        // Unmap the file.
+        if (munmap(table.load(), sizeof(Table) + (sizeof(KVpair) * size)) != 0)
+        {
+            // error
+            fprintf(stderr, "Failed to unmap the file from memory.\n");
+        }
         return;
     }
 
@@ -318,8 +393,6 @@ public:
         assert(oldVal != VINITIAL);
         Value retVal = putIfMatch(table.load(), key, newVal, oldVal, CAS);
         assert(!IS_MARKED(retVal, 0));
-        // TODO: Can we safely ignore this?
-        //assert(retVal != VINITIAL);
         return retVal == VTOMBSTONE ? VINITIAL : retVal;
     }
 
