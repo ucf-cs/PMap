@@ -55,6 +55,9 @@
 #define CLR_MARK(_p, offset) (void *)((uintptr_t)_p & (uintptr_t) ~(1 << offset))
 #define IS_MARKED(_p, offset) (void *)((uintptr_t)_p & (uintptr_t)(1 << offset))
 
+#define SFENCE void __builtin_ia32_sfence(void)
+#define CLWB void _mm_clwb(void const *p);
+
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 #define REPROBE_LIMIT 10
 
@@ -197,8 +200,12 @@ public:
             for (size_t i = 0; i < tableCapacity; i++)
             {
                 // Initialize these to a default, reserved value.
+                SFENCE;
                 pairs[i].key.store(KINITIAL);
+                CLWB;
+                SFENCE;
                 pairs[i].value.store(VINITIAL);
+                CLWB;
             }
             len = tableCapacity;
             return;
@@ -211,20 +218,28 @@ public:
         Key key(size_t idx)
         {
             assert(idx < len);
-            return pairs[idx].key.load();
+            CLWB;
+            Key ret = pairs[idx].key.load();
+            SFENCE;
+            return ret;
         }
         // Function to get a value at an index.
         Value value(size_t idx)
         {
             assert(idx < len);
-            return pairs[idx].value.load();
+            CLWB;
+            Value ret = pairs[idx].value.load();
+            SFENCE;
+            return ret;
         }
         // Function to CAS a key.
         Key CASkey(size_t idx, Key oldKey, Key newKey)
         {
             assert(idx < len);
             Key oldKeyRef = oldKey;
+            SFENCE;
             pairs[idx].key.compare_exchange_strong(oldKeyRef, newKey);
+            SFENCE;
             return oldKeyRef;
         }
         // Function to CAS a value.
@@ -232,7 +247,9 @@ public:
         {
             assert(idx < table->len);
             Key oldValueRef = oldValue;
+            SFENCE;
             table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
+            SFENCE;
             return oldValueRef;
         }
 
@@ -248,8 +265,10 @@ public:
             // Our actual new value here is dependent on the old value.
             // NOTE: The correct way to perform this addition is entirely dependent on the type of Value.
             newValue = ((oldValue >> 3) + (newValue >> 3)) << 3;
+            SFENCE;
             // Must be CAS rather than FAA because the old value might be a sentinel.
             table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
+            SFENCE;
             return oldValueRef;
         }
     };
