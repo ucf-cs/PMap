@@ -280,13 +280,31 @@ public:
             size_t length = sizeof(Table) + (sizeof(KVpair) * size);
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if (address == -1)
+            if ((uintptr_t)address == -1)
             {
                 // error
                 fprintf(stderr, "Failed to mmap the existing file. errno %d\n", errno);
             }
             // Assign the KV pairs.
             ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
+            // Use the KV pairs to determine the number of used and free entries in the table.
+            ((Table *)address)->chm.size.store(0);
+            ((Table *)address)->chm.slots.store(0);
+            for (size_t i = 0; i < size; i++)
+            {
+                Value V = ((Table *)address)->pairs[i].value;
+                if (V != VINITIAL && V != VTOMBSTONE)
+                {
+                    ((Table *)address)->chm.size.fetch_add(1);
+                }
+                else if (V != VTOMBSTONE)
+                {
+                    ((Table *)address)->chm.slots.fetch_add(1);
+                }
+            }
+            // The length the table is already known and set.
+            // We still assign it here, just for clarity, since it can also be inferred using the file size.
+            ((Table *)address)->len = size;
         }
         // If file doesn't exist yet. Try to make it.
         else
