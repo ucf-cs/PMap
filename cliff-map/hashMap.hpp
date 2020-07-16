@@ -156,17 +156,10 @@ public:
             // If this number gets too large, consider resizing.
             std::atomic<size_t> slots;
 
-            CHM(size_t tableCapacity, size_t existingSize)
+            CHM(size_t tableCapacity = Table::MIN_SIZE, size_t existingSize = 0)
             {
                 this->size.store(existingSize);
                 slots.store(tableCapacity);
-            }
-            // NOTE: This constructor should not be used. Instead, any initialized CHM should provide a table capacity and existing size before use.
-            CHM()
-            {
-                //CHM(Table::MIN_SIZE);
-                this->size.store(0);
-                slots.store(Table::MIN_SIZE);
             }
 
             // Heuristic to estimate if the table is overfull.
