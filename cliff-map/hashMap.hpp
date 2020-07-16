@@ -5,6 +5,7 @@
 // Potentially enhanced using ideas from Reuse, Don't Recycle: https://drops.dagstuhl.de/opus/volltexte/2017/8009/pdf/LIPIcs-DISC-2017-4.pdf
 // NOTE: Must run ./configure in the glog folder to build successfully.
 // NOTE: Reserves 3 bits to use PMwCAS. Leaves no spare bits.
+// Easy persistence can be done based on this: https://dl.acm.org/doi/abs/10.1145/2935764.2935810 and this: http://concurrencyfreaks.blogspot.com/2018/01/a-lock-free-persistent-queue.html
 
 // TODO: Uses hopscotch hashing to improve table utilization: https://en.wikipedia.org/wiki/Hopscotch_hashing
 // Lock-free design https://arxiv.org/pdf/1911.03028.pdf and code https://github.com/DaKellyFella/LockFreeHopscotchHashing/blob/master/src/hash-tables/hsbm_lf.h
@@ -283,7 +284,8 @@ public:
         // This will hold the memory address of our memory mapped table.
         void *address;
         // Try to open an existing hash table.
-        fd = open(fileName, O_RDONLY);
+        fd = open(fileName, O_RDWR);
+        //fprintf(stderr, "errno %d: %s\n", errno, strerror(errno));
         // If we succeeded, just map the existing data.
         if (fd != -1)
         {
@@ -302,7 +304,7 @@ public:
             if ((uintptr_t)address == -1)
             {
                 // error
-                fprintf(stderr, "Failed to mmap the existing file. errno %d\n", errno);
+                fprintf(stderr, "Failed to mmap the existing file. errno %d: %s\n", errno, strerror(errno));
             }
             // Assign the KV pairs.
             ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
@@ -329,7 +331,7 @@ public:
         else
         {
             // Create and open the file.
-            fd = open(fileName, O_RDWR | O_CREAT);
+            fd = open(fileName, O_RDWR | O_CREAT, 0666);
             if (fd == -1)
             {
                 // error
