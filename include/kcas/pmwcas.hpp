@@ -15,9 +15,11 @@
 
 // TODO: OVERALL: Add support for descriptor reuse. This involves creating per-thread descriptors (KCAS and RDCSS descriptors) and accessing descriptor fields using custom read and CAS logic implemented in the Trevor Brown paper on descriptor reuse. One that work is done, the PMwCAS will be complete.
 
-// NOTE: T must not use the first 4 bits, and must not be larger than an atomic word.
-// Ex. 60-bit int shifted left.
-// Ex. pointer?
+// T: The data type being dealt with. Ideally, it should just be something word-sized.
+// NOTE: T must not use the first 3 bits, and must not be larger than an atomic word.
+// Ex. 61-bit int shifted left, pointers.
+// K: The maximum number of words that can be atomically modified by the KCAS.
+// P: The number of threads that can help perform operations.
 template <class T, size_t K, size_t P>
 class PMwCASManager
 {
@@ -25,9 +27,14 @@ public:
     static const uintptr_t DirtyFlag = 1;
     static const uintptr_t PMwCASFlag = 2;
     static const uintptr_t RDCSSFlag = 4;
-    //static const uintptr_t MigrationFlag = 8;
-    //static const uintptr_t AddressMask = ~15;
-    static const uintptr_t AddressMask = ~7;
+    // NOTE: These are normally never set at the same time.
+    // We get an extra bit out of this, so long as we help complete descriptors
+    // before marking for migration. If we didn't help, then we may need to
+    // migrate a descriptor, but then wouldn't be able to recognize it as a
+    // descriptor since it was overwritten with the migration flag.
+    static const uintptr_t MigrationFlag = PMwCASFlag | RDCSSFlag;
+    // The mask includes all bits not used for flags.
+    static const uintptr_t AddressMask = ~(DirtyFlag | PMwCASFlag | RDCSSFlag | MigrationFlag);
 
     // Forward declarations.
     struct Descriptor;
@@ -71,6 +78,7 @@ public:
     // KCAS descriptor.
     struct alignas(64) Descriptor
     {
+        // TODO: Consider making the fields private to require access via functions.
         std::atomic<Status> status;
         size_t count;
         alignas(64) Word words[K];
@@ -78,6 +86,55 @@ public:
     // Our descriptor pools.
     Descriptor descriptors[P];
     Word words[P * K];
+
+    T readField(DescRef des, unsigned int fieldID)
+    {
+        Descriptor *q = &descriptors[des.tid];
+        T result = descriptor[des.tid].words[fieldID].address->load();
+        if (des.seq != descriptor[des.tid].seq)
+        {
+            return dv;
+        }
+        return result;
+    }
+
+    bool writeField(DescRef des, size_t fieldID, T value)
+    {
+        while (true)
+        {
+            T expVal = descriptor[des.tid].words[fieldID].address->load();
+            if (des.seq != descriptor[des.tid].seq)
+            {
+                return false;
+            }
+            T newVal = value;
+            if (CASField(des, fieldID, expVal, newVal))
+            {
+                return true;
+            }
+        }
+    }
+
+    T CASField(DescRef des, size_t fieldID, T fExp, T fNew)
+    {
+        while (true)
+        {
+            T expVal = descriptor[des.tid].words[fieldID].address->load();
+            if (des.seq != descriptor[des.tid].seq)
+            {
+                return tdv;
+            }
+            if (expVal != fExp)
+            {
+                return fExp;
+            }
+            T newVal = fNew;
+            if (descriptor[des.tid].words[fieldID].address->compare_exchange_strong(expVal, newVal))
+            {
+                return newVal;
+            }
+        }
+    }
 
     // Fast sort for small arrays.
     void insertionSortRecursive(size_t n, size_t *addresses, size_t *sorts)
