@@ -331,7 +331,7 @@ public:
         else
         {
             // Create and open the file.
-            fd = open(fileName, O_RDWR | O_CREAT, 0666);
+            fd = open(fileName, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
             if (fd == -1)
             {
                 // error
