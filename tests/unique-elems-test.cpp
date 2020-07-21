@@ -5,8 +5,10 @@
 #include <iomanip>
 #include <cstdio>
 #include <memory>
+#include <vector>
+#include <algorithm>
 
-#define CACHELINESZ 64
+static constexpr int CACHELINESZ=64;
 
 #ifndef TEST_CONFLICTS
 #define TEST_CONFLICTS 0
@@ -23,6 +25,7 @@ struct TestOptions
   size_t      numruns    = 1;
   size_t      capacity   = 16; // actual capacity is 2 ^ capacity
   bool        sequential = false;
+  bool        printdata  = false;
   std::string filename   = "./chashmap.dat";
 };
 
@@ -79,7 +82,7 @@ bool insert(std::map<KeyT, ValT>& c, ValT el)
 {
   using map_element = std::map<KeyT, ValT>::value_type;
 
-  //~ std::cerr << "i " << el << std::endl;
+  //~ std::cerr << 'i' << el << ' ' << th << std::endl;
 
   guard_type g(global_lock);
 
@@ -88,9 +91,9 @@ bool insert(std::map<KeyT, ValT>& c, ValT el)
 
 bool erase(std::map<KeyT, ValT>& c, KeyT el)
 { 
-  //~ std::cerr << "e " << el << std::endl;
-
-  guard_type g(global_lock);
+  //~ std::cerr << 'e' << el << ' ' << th << std::endl;
+  
+	guard_type g(global_lock);
 
   return c.erase(el) == 1;
 }
@@ -231,20 +234,23 @@ int expectedSize(size_t maxthread, size_t totalops)
   return _expectedSize(maxthread, totalops);
 }
 
-size_t genElem(size_t num, size_t thrid, size_t, size_t ops)
+size_t genElem(size_t num, size_t thrid, size_t, size_t maxOpsPerThread)
 {
-  return thrid * (ops+1) + num;
+  assert(num < maxOpsPerThread);
+
+  return thrid * maxOpsPerThread + num;
 }
 
 #endif
+
 
 std::atomic<bool> ptest_failed(false);
 
 void container_test_prefix(ThreadInfo& ti)
 {
   const size_t tinum     = ti.num;
+	const size_t maxops    = opsPerThread(ti.num_threads, ti.pnoiter, 0);
   size_t       numops    = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
-  const size_t threadops = numops;
   const size_t nummain   = opsMainLoop(numops);
   size_t       wrid      = 0;
 
@@ -252,11 +258,12 @@ void container_test_prefix(ThreadInfo& ti)
   {
     while (numops > nummain)
     {
-      int     elem = genElem(++wrid, tinum, ti.num_threads, threadops);
+      int     elem = genElem(wrid, tinum, ti.num_threads, maxops);
       int     succ = insert(*ti.container, elem);
 
       assert(succ >= 0), unused(succ);
       ++ti.succ;
+			++wrid;
       // std::cout << "insert' " << elem << " " << succ << std::endl;
 
       --numops;
@@ -272,12 +279,12 @@ void container_test_prefix(ThreadInfo& ti)
 
 void container_test(ThreadInfo& ti)
 {
-  const size_t      tinum   = ti.num;
-  size_t            numops  = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
-  const size_t      threadops = numops;
-  const size_t      nummain = opsMainLoop(numops);
-  size_t            wrid    = numops - nummain;
-  size_t            rdid    = wrid / 2;
+  const size_t tinum   = ti.num;
+	const size_t maxops  = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  size_t       numops  = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
+  const size_t nummain = opsMainLoop(numops);
+  size_t       wrid    = numops - nummain;
+  size_t       rdid    = wrid / 2;
 
   try
   {
@@ -289,18 +296,20 @@ void container_test(ThreadInfo& ti)
     {
       if (numops % 2)
       {
-        int    elem = genElem(++wrid, tinum, ti.num_threads, threadops);
+        int    elem = genElem(wrid, tinum, ti.num_threads, maxops);
         int    succ = insert(*ti.container, elem);
 
         assert(succ >= 0), unused(succ);
+        ++wrid;
         ++ti.succ;
 	      // std::cout << "insert " << elem << " " << succ << std::endl;
       }
       else
       {
-        int    elem = genElem(++rdid, tinum, ti.num_threads, threadops);
+        int    elem = genElem(rdid, tinum, ti.num_threads, maxops);
         int    succ = erase(*ti.container, elem);
         
+				++rdid;
 	      if (succ > 0) ++ti.succ; else ++ti.fail;
 	      // std::cout << "erase " << elem << " " << succ << std::endl;
       }
@@ -432,6 +441,67 @@ int parallel_test(const TestOptions& opt)
 }
 
 
+
+void prnGen(size_t numThreads, int nops)
+{
+  std::vector<size_t> dataset;
+	const size_t        maxops = opsPerThread(numThreads, nops, 0);
+
+  for (size_t tinum = 0; tinum < numThreads; ++tinum)
+	{
+    size_t       numops = opsPerThread(numThreads, nops, tinum);
+		const size_t nummain = opsMainLoop(numops);
+		size_t       wrid = 0;
+
+	  std::cout << tinum << ": ";
+		while (numops > nummain)
+    {
+		  dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
+			++wrid;
+		  std::cout << ", i" << dataset.back();
+		}
+
+		std::cout << " - ";
+
+    numops = opsPerThread(numThreads, nops, tinum);;
+    wrid   = numops - nummain;
+		numops = nummain;
+		
+		size_t rdid    = wrid / 2;
+
+		while (numops)
+		{
+      if (numops % 2)
+      {
+			  dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
+				++wrid;
+			  std::cout << ", i" << dataset.back();
+      }
+      else
+      {
+			  std::cout << ", e" << genElem(rdid, tinum, numThreads, maxops);
+				++rdid;
+      }
+
+      --numops;
+	  }
+
+		std::cout << std::endl;
+	}
+
+	std::sort(dataset.begin(), dataset.end());
+
+  std::vector<size_t>::iterator pos = std::adjacent_find(dataset.begin(), dataset.end());
+
+  while (pos != dataset.end())
+	{
+	  std::cerr << "non-unique element: " << *pos << std::endl;
+
+		pos = std::adjacent_find(std::next(pos), dataset.end());
+	}
+}
+
+
 template <class U, class V>
 U conv(const V& val)
 {
@@ -505,6 +575,7 @@ void help(const std::string& executable)
 	    << "-p num   number of parallel runs (default: " << tmp.numruns << ")\n"
 	    << "-c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
 	    << "-s       if specified, a sequential test is run before the parallel tests.\n"
+	    << "-d       if specified, the generated data test is printed before the run.\n"
 	    << "-h       displays this help message\n"
 	    << std::endl;
 
@@ -537,6 +608,7 @@ int main(int argc, char** args)
               || matchOpt1(arguments, argn, "-p", settings.numruns)
               || matchOpt1(arguments, argn, "-c", settings.capacity) 
               || matchOpt0(arguments, argn, "-s", setField<bool>, std::ref(settings.sequential), true)
+              || matchOpt0(arguments, argn, "-d", setField<bool>, std::ref(settings.printdata), true)
               || matchOpt0(arguments, argn, "-h", help, arguments.at(0))
 							);
   }
@@ -555,6 +627,9 @@ int main(int argc, char** args)
 						   << " ( " << (1<<settings.capacity) << ")" 
             << "\n***             container type: " << typeid(container_type).name() 
 						<< std::endl;
+
+  if (settings.printdata)
+    prnGen(settings.numthreads, settings.numops);
 
   if (settings.sequential)
   {
@@ -584,9 +659,6 @@ int main(int argc, char** args)
     if (settings.numruns)
     {
       std::cout << "average time: " << (total_time/settings.numruns) << std::endl;
-      
-      if (settings.sequential)
-        std::cout << "speedup: " << float(seqtime * settings.numruns) / total_time << "x" << std::endl;  
     }
     
     std::cout << std::endl;
@@ -596,5 +668,6 @@ int main(int argc, char** args)
     std::cout << "error in parallel test..." << std::endl;
   }
 
+  unused(seqtime);
   return 0;
 }
