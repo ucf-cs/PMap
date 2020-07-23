@@ -7,8 +7,13 @@
 #include <memory>
 #include <vector>
 #include <algorithm>
+#include <new>
 
-static constexpr int CACHELINESZ=64;
+#ifndef DEFAULT_CACHELINE_SIZE
+static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
+#else
+static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
+#endif
 
 #ifndef TEST_CONFLICTS
 #define TEST_CONFLICTS 0
@@ -33,7 +38,7 @@ struct TestOptions
 // define container and operations
 // i.e., insert, erase, count
 
-using mutex_type  = std::mutex;
+using mutex_type = std::mutex;
 using guard_type = std::lock_guard<mutex_type>; 
 
 mutex_type global_lock;
@@ -51,8 +56,8 @@ bool insert(ConcurrentHashMap<KeyT, ValT>& c, ValT el)
 
   // std::cout << "i " << shiftedEl << std::endl;
 
-  c.put(shiftedEl, shiftedEl);
-  return true;
+  ValT x = c.put(shiftedEl, shiftedEl);
+  return x == shiftedEl;
 }
 
 bool erase(ConcurrentHashMap<KeyT, ValT>& c, ValT el)
@@ -70,11 +75,14 @@ size_t count(ConcurrentHashMap<KeyT, ValT>& c)
 ConcurrentHashMap<KeyT, ValT>& 
 construct(const TestOptions& opt, ConcurrentHashMap<KeyT, ValT>*)
 {
-  ConcurrentHashMap<KeyT, ValT>* cont = new ConcurrentHashMap<KeyT, ValT>(opt.filename.c_str(), 1 << opt.capacity);
+  const size_t realcapacity = 1 << opt.capacity;
+  const char*  fn = opt.filename.c_str();
 
-	if (cont == nullptr) throw std::runtime_error("could not allocate");
+  ConcurrentHashMap<KeyT, ValT>* cont = new ConcurrentHashMap<KeyT, ValT>(fn, realcapacity);
 
-	return *cont;
+  if (cont == nullptr) throw std::runtime_error("could not allocate");
+
+  return *cont;
 }
 
 
@@ -93,7 +101,7 @@ bool erase(std::map<KeyT, ValT>& c, KeyT el)
 { 
   //~ std::cerr << 'e' << el << ' ' << th << std::endl;
   
-	guard_type g(global_lock);
+  guard_type g(global_lock);
 
   return c.erase(el) == 1;
 }
@@ -108,9 +116,9 @@ construct(const TestOptions&, std::map<KeyT, ValT>*)
 {
   std::map<KeyT, ValT>* cont = new std::map<KeyT, ValT>;
 
-	if (cont == nullptr) throw std::runtime_error("could not allocate");
+  if (cont == nullptr) throw std::runtime_error("could not allocate");
 
-	return *cont;
+  return *cont;
 }
 
 
@@ -147,7 +155,7 @@ struct alignas(CACHELINESZ) ThreadInfo
   }
 
   ThreadInfo()
-  : ThreadInfo(nullptr, 0, 0, 0)
+  : ThreadInfo(nullptr, 0, 0, 1)
   {}
 };
 
@@ -157,15 +165,15 @@ void fail()
 }
 
 /// counts number of threads that are ready to run
-size_t waiting_threads;
+std::atomic<size_t> waiting_threads;
 
 /// waits until all threads have been created and are ready to run
 void sync_start()
 {
-  assert(waiting_threads);
-  __sync_fetch_and_sub(&waiting_threads, 1);
+  assert(waiting_threads.load());
+  waiting_threads.fetch_add(-1);
 
-  while (waiting_threads) __sync_synchronize();
+  while (waiting_threads.load()) {} 
 }
 
 /// computes number of operations that a thread will carry out
@@ -249,7 +257,7 @@ std::atomic<bool> ptest_failed(false);
 void container_test_prefix(ThreadInfo& ti)
 {
   const size_t tinum     = ti.num;
-	const size_t maxops    = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  const size_t maxops    = opsPerThread(ti.num_threads, ti.pnoiter, 0);
   size_t       numops    = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
   const size_t nummain   = opsMainLoop(numops);
   size_t       wrid      = 0;
@@ -280,7 +288,7 @@ void container_test_prefix(ThreadInfo& ti)
 void container_test(ThreadInfo& ti)
 {
   const size_t tinum   = ti.num;
-	const size_t maxops  = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  const size_t maxops  = opsPerThread(ti.num_threads, ti.pnoiter, 0);
   size_t       numops  = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
   const size_t nummain = opsMainLoop(numops);
   size_t       wrid    = numops - nummain;
@@ -309,8 +317,8 @@ void container_test(ThreadInfo& ti)
         int    elem = genElem(rdid, tinum, ti.num_threads, maxops);
         int    succ = erase(*ti.container, elem);
         
-				++rdid;
-	      if (succ > 0) ++ti.succ; else ++ti.fail;
+	++rdid;
+	if (succ > 0) ++ti.succ; else ++ti.fail;
 	      // std::cout << "erase " << elem << " " << succ << std::endl;
       }
 
@@ -344,7 +352,7 @@ void ptest(ThreadInfo& ti, time_point& starttime)
 size_t sequential_test(const TestOptions& opt)
 {
   container_type* const           tag  = nullptr;
-	std::unique_ptr<container_type> cont{&construct(opt, tag)};
+  std::unique_ptr<container_type> cont{&construct(opt, tag)};
   ThreadInfo                      info{cont.get(), 0, opt.numops, 1};
 
   std::cout << std::endl;
@@ -357,7 +365,7 @@ size_t sequential_test(const TestOptions& opt)
   time_point endtime = std::chrono::system_clock::now();
   const int  elapsedtime = std::chrono::duration_cast<duration_unit>(endtime-starttime).count();
   const int  actsize = count(*cont);
-	const int  expctsize = expectedSize(1, opt.numops);
+  const int  expctsize = expectedSize(1, opt.numops);
   
   if (expctsize != actsize)
   {
@@ -380,19 +388,28 @@ int parallel_test(const TestOptions& opt)
   std::cout << std::endl;
 
   std::list<std::thread>          exp_threads;
-  std::list<ThreadInfo>           thread_info;
-	container_type* const           tag  = nullptr;
-  std::unique_ptr<container_type> cont{&construct(opt, tag)};
+  std::vector<ThreadInfo>         thread_info(opt.numthreads, ThreadInfo{});
+  container_type* const           tag  = nullptr;
+  std::unique_ptr<container_type> cont{&construct(opt, tag)}; // for lifetime management
+  container_type*                 contptr = cont.get();
   time_point                      starttime;
 
   waiting_threads = opt.numthreads;
 
   // spawn
-  for (size_t i = 0; i < opt.numthreads; ++i)
+  for (size_t i = 1; i < opt.numthreads; ++i)
   {
-    thread_info.push_back(ThreadInfo(cont.get(), i, opt.numops, opt.numthreads));
-    exp_threads.emplace_back(ptest, std::ref(thread_info.back()), std::ref(starttime));
+    ThreadInfo& ti = thread_info.at(i);
+
+    ti = ThreadInfo(contptr, i, opt.numops, opt.numthreads);
+    exp_threads.emplace_back(ptest, std::ref(ti), std::ref(starttime));
   }
+
+  // use main thread as worker
+  ThreadInfo& thisTi = thread_info.front();
+
+  thisTi = ThreadInfo(contptr, 0, opt.numops, opt.numthreads);
+  ptest(thisTi, starttime); 
 
   // join
   for (std::thread& thr : exp_threads) thr.join();

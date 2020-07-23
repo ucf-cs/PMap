@@ -201,17 +201,21 @@ public:
             assert(tableCapacity >= MIN_SIZE);
             new (&chm) CHM(tableCapacity, existingSize);
             // NOTE: We assume our pairs have already been memory mapped by this point.
-            assert(pairs != NULL);
+            
+	    assert(pairs != NULL);
             for (size_t i = 0; i < tableCapacity; i++)
             {
                 // Initialize these to a default, reserved value.
                 SFENCE;
+                std::cerr << ' ' << (pairs + i);
                 pairs[i].key.store(KINITIAL);
-                CLWB(&(pairs[i].key));
+             
+	    	CLWB(&(pairs[i].key));
                 SFENCE;
                 pairs[i].value.store(VINITIAL);
                 CLWB(&pairs[i].value);
             }
+
             len = tableCapacity;
             return;
         }
@@ -342,6 +346,7 @@ public:
 		    std::cerr << "Failed to create or open the file." << std::endl;
 		    throw std::runtime_error("cannot create or open file");
             }
+
             // Allocate enough space for the table and the KV pairs.
             size_t length = sizeof(Table) + (sizeof(KVpair) * size);
             // Truncate will actually extend the size of the file by filling with NULL.
@@ -351,13 +356,17 @@ public:
                 fprintf(stderr, "Failed to adjust file size.\n");
 		throw std::runtime_error("cannot create or open file");
             }
+
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	    
             // Assign the KV pairs.
             ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
+            // std::cerr << 'Q';
             // Placement new will allocate our table within the memory mapped region.
             new (address) Table(size, 0);
-        }
+            
+	}
         // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
         close(fd);
         // Store this address as the table.

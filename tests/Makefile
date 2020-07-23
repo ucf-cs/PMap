@@ -12,6 +12,7 @@ ifeq ($(BUILDTYPE),debug)
 endif
 
 WARNFLAG ?= -Wall -Wextra -pedantic
+ARCHFLAG ?= -DDEFAULT_CACHELINE_SIZE=64 # should not be needed for a c++17 compliant compiler
 
 INCLUDES := -I../include -I../cliff-map
 TARGET   := ../bin/unique-elems-test.bin
@@ -21,7 +22,7 @@ default: $(TARGET)
 
 $(TARGET): unique-elems-test.cpp ../cliff-map/hashMap.hpp ../include/define.hpp
 	mkdir -p ../bin
-	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(INCLUDES) $< -o $@
+	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(ARCHFLAG) $(INCLUDES) $< -o $@
 
 .PHONY: clean
 clean:
