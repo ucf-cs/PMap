@@ -5,7 +5,7 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-#define K 16
+inline const size_t K = 16;
 
 PMwCASManager<uintptr_t, K, THREAD_COUNT> *pmwcas;
 alignas(64) PMwCASManager<uintptr_t, K, THREAD_COUNT>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
@@ -70,7 +70,7 @@ void performOps(int threadNum)
             // We choose an index of the array to modify, which was selected at random.
             words[j].address = &array[index];
             // Read the current value at that index.
-            // If it doesn't match, it fails.
+            // If it doesn't match, the PMwCAS will fail.
             words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
             // Pick a new value at random.
             // By keeping the last 4 bits at 0, we avoid assigning an invalid, marked value.
@@ -132,7 +132,7 @@ int main(void)
     }
 
     std::cout << "\n";
-    std::cout << std::chrono::duration_cast<std::chrono::TIME_UNIT>(finish - start).count();
+    std::cout << std::chrono::duration_cast<TIME_UNIT>(finish - start).count();
     std::cout << "\n";
 
     return 0;

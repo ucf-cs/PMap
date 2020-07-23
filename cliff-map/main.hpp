@@ -1,8 +1,6 @@
 #ifndef __MAIN_HEADER__
 #define __MAIN_HEADER__
 
-#define TIME_UNIT nanoseconds
-
 #include <assert.h>
 
 #include <chrono>
@@ -15,9 +13,15 @@
 #include <unistd.h>
 
 #include "define.hpp"
+#include "hash.hpp"
 #include "hashMap.hpp"
 
-ConcurrentHashMap<void *, void *> *hashMap;
+typedef std::chrono::nanoseconds TIME_UNIT;
+
+typedef void *Key;
+typedef void *Value;
+
+ConcurrentHashMap<Key, Value, xxhash<Key>> *hashMap;
 // Create a pool of valid pointers.
 // Threads can and should share these, to encourage overlaps.
 size_t pointerPool[PTR_POOL_SIZE];

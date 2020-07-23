@@ -36,41 +36,12 @@
 #include <iostream>
 #include <utility>
 
-#include "xxhash.hpp"
-
-// Pointer marking.
-// Offset can be set from 0-2 to mark different bits.
-#define SET_MARK(_p, offset) (void *)((uintptr_t)_p | (uintptr_t)(1 << offset))
-#define CLR_MARK(_p, offset) (void *)((uintptr_t)_p & (uintptr_t) ~(1 << offset))
-#define IS_MARKED(_p, offset) (void *)((uintptr_t)_p & (uintptr_t)(1 << offset))
-
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
-#define REPROBE_LIMIT 10
+inline const size_t REPROBE_LIMIT = 10;
 
-std::hash<void *> hasher;
-
-template <class Key, class Value>
+template <class Key, class Value, class Hash = std::hash<Key>>
 class ConcurrentHashMap
 {
-    // Hash function.
-    static size_t hash(Key key)
-    {
-        // xxhash hashing.
-        std::array<Key, 1> input{key};
-        xxh::hash_t<64> hash = xxh::xxhash<64>(input);
-
-        // C++ standard library hashing.
-        //size_t hash = hasher(key);
-
-        // hash=key naive hashing.
-        //size_t hash = (size_t)key;
-
-        // Debug to determine what hashes we are generating.
-        //std::cout << hash << std::endl;
-
-        return ((size_t)hash);
-    }
-
     // Sentinels.
     // Only work if they key and value are pointer types.
     // Otherwise, these must be reserved and unused by any keys or values.
@@ -137,7 +108,7 @@ public:
             // Signals when all resizing is finished.
             std::atomic<size_t> copyDone;
 
-            void copyCheckAndPromote(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, size_t workDone)
+            void copyCheckAndPromote(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, size_t workDone)
             {
                 assert(&(oldTable->chm) == this);
                 size_t oldLen = oldTable->len;
@@ -160,7 +131,7 @@ public:
                 return;
             }
 
-            bool copySlot(ConcurrentHashMap<Key, Value> *hashMap, size_t idx, Table *oldTable, Table *newTable)
+            bool copySlot(ConcurrentHashMap<Key, Value, Hash> *hashMap, size_t idx, Table *oldTable, Table *newTable)
             {
                 // A minor optimization to eagerly stop put operations from succeeding by placing a tombstone.
                 Key key;
@@ -173,10 +144,10 @@ public:
                 // Mark what we see in the old table to prevent future updates.
                 Value oldVal = oldTable->value(idx);
                 // Keep trying to mark the value until we succeed.
-                while (!IS_MARKED(oldVal, 0))
+                while (!isMarked((uintptr_t)oldVal, 0))
                 {
                     // If there isn't a usable value to migrate, replace it with a tombprime. Otherwise, mark it.
-                    Value mark = (oldVal == NULL || oldVal == TOMBSTONE) ? TOMBPRIME : SET_MARK(oldVal, 0);
+                    Value mark = (oldVal == NULL || oldVal == TOMBSTONE) ? TOMBPRIME : setMark((uintptr_t)oldVal, 0);
                     // Attempt the CAS.
                     Value actualVal = CASvalue(oldTable, idx, oldVal, mark);
                     // If we succeeded.
@@ -208,7 +179,7 @@ public:
                     return false;
                 }
                 // Try to copy the value from the old table into the new table.
-                Value oldUnmarked = CLR_MARK(oldVal, 0);
+                Value oldUnmarked = clearMark((uintptr_t)oldVal, 0);
                 // If this was a tombstone, whe should have already finished. This should be impossible.
                 assert(oldUnmarked != TOMBSTONE);
                 // Attempt to copy the value into the new table.
@@ -292,7 +263,7 @@ public:
             }
 
             // A wait-free resize.
-            Table *resize(ConcurrentHashMap<Key, Value> *hashMap, Table *table)
+            Table *resize(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *table)
             {
                 // Check for a resize in progress.
                 // If one is found, return the already-existing new table.
@@ -375,7 +346,7 @@ public:
                 return newTable;
             }
 
-            Table *copySlotAndCheck(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, size_t idx, bool shouldHelp)
+            Table *copySlotAndCheck(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, size_t idx, bool shouldHelp)
             {
                 assert(&(oldTable->chm) == this);
                 Table *newTable = this->newTable.load();
@@ -393,7 +364,7 @@ public:
 
             // Help migrate the table.
             // Do not migrate the whole table by default.
-            void helpCopyImpl(ConcurrentHashMap<Key, Value> *hashMap, Table *oldTable, bool copyAll = false)
+            void helpCopyImpl(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, bool copyAll = false)
             {
                 assert(&(oldTable->chm) == this);
                 Table *newTable = this->newTable.load();
@@ -617,7 +588,7 @@ public:
         assert(newVal != NULL);
         assert(oldVal != NULL);
         Value retVal = putIfMatch(table.load(), key, newVal, oldVal, CAS);
-        assert(!IS_MARKED(retVal, 0));
+        assert(!isMarked((uintptr_t)retVal, 0));
         // TODO: Can we safely ignore this?
         //assert(retVal != NULL);
         return retVal == TOMBSTONE ? NULL : retVal;
@@ -672,7 +643,7 @@ public:
                 // We found the target key.
 
                 // Check to make sure there isn't a table copy in progress.
-                if (!IS_MARKED(V, 0))
+                if (!isMarked((uintptr_t)V, 0))
                 {
                     // No table copy.
                     // We can return the assoicated value.
@@ -701,9 +672,9 @@ public:
     // Get the value associated with a particular key.
     Value get(Key key)
     {
-        size_t fullhash = hash(key);
+        size_t fullhash = Hash{}(key);
         Value V = getImpl(table, key, fullhash);
-        assert(!IS_MARKED(V, 0));
+        assert(!isMarked((uintptr_t)V, 0));
         return V;
     }
 
@@ -712,10 +683,10 @@ public:
                      Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
         assert(newVal != NULL);
-        assert(!IS_MARKED(newVal, 0));
-        assert(!IS_MARKED(oldVal, 0));
+        assert(!isMarked((uintptr_t)newVal, 0));
+        assert(!isMarked((uintptr_t)oldVal, 0));
         size_t len = table->len;
-        size_t idx = hash(key) & (len - 1);
+        size_t idx = Hash{}(key) & (len - 1);
 
         size_t reprobeCount = 0;
         Key K;
@@ -734,7 +705,7 @@ public:
                 // If we find an empty slot, the key was never in the table.
 
                 // If we were trying to remove the key.
-                if (newVal == ConcurrentHashMap<Key, Value>::TOMBSTONE)
+                if (newVal == ConcurrentHashMap<Key, Value, Hash>::TOMBSTONE)
                 {
                     // We don't need to do anything.
                     return newVal;
@@ -800,7 +771,7 @@ public:
             // And we are doing a fresh key insert while the table is nearly full.
             ((V == NULL && table->chm.tableFull(reprobeCount, len)) ||
              // Or our value is primed.
-             IS_MARKED(V, 0)))
+             isMarked((uintptr_t)V, 0)))
         {
             // Force the table copy to start.
             newTable = table->chm.resize(this, table);
@@ -816,7 +787,7 @@ public:
         // Update the existing table.
         while (true)
         {
-            assert(!IS_MARKED(V, 0));
+            assert(!isMarked((uintptr_t)V, 0));
 
             // May want to quit early if the slot doesn't contain the expected value.
 
@@ -868,7 +839,7 @@ public:
                 V = actualValue;
             }
             // If a primed value was is present (placed by us or someone else), re-run put on the new table.
-            if (IS_MARKED(table->value(idx), 0))
+            if (isMarked((uintptr_t)table->value(idx), 0))
             {
                 return putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == NULL), key, newVal, oldVal);
             }
@@ -912,13 +883,13 @@ private:
 };
 
 // Initialization of sentinels.
-template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::MATCH_ANY = new size_t();
-template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::NO_MATCH_OLD = new size_t();
-template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::TOMBSTONE = new size_t();
-template <typename Key, typename Value>
-void *ConcurrentHashMap<Key, Value>::TOMBPRIME = SET_MARK(TOMBSTONE, 0);
+template <class Key, class Value, class Hash>
+void *ConcurrentHashMap<Key, Value, Hash>::MATCH_ANY = new size_t();
+template <class Key, class Value, class Hash>
+void *ConcurrentHashMap<Key, Value, Hash>::NO_MATCH_OLD = new size_t();
+template <class Key, class Value, class Hash>
+void *ConcurrentHashMap<Key, Value, Hash>::TOMBSTONE = new size_t();
+template <class Key, class Value, class Hash>
+void *ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = setMark((uintptr_t)TOMBSTONE, 0);
 
 #endif

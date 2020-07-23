@@ -71,7 +71,7 @@ void performOps(int threadNum)
             break;
         case 7:
             // Not a meaningful case, since we are currently working with pointers, not ints.
-            hashMap->update(ptr, ptr, ConcurrentHashMap<void *, void *>::Table::increment);
+            hashMap->update(ptr, ptr, ConcurrentHashMap<Key, Value, xxhash<Key>>::Table::increment);
             break;
         }
     }
@@ -119,7 +119,7 @@ int main(void)
     std::thread threads[THREAD_COUNT];
 
     // Create the hash map.
-    hashMap = new ConcurrentHashMap<void *, void *>();
+    hashMap = new ConcurrentHashMap<Key, Value, xxhash<Key>>();
 
     // Pre-insertion step.
     //threadRunner(threads, preinsert);
@@ -140,7 +140,7 @@ int main(void)
 
     hashMap->print();
     std::cout << "\n";
-    std::cout << std::chrono::duration_cast<std::chrono::TIME_UNIT>(finish - start).count();
+    std::cout << std::chrono::duration_cast<TIME_UNIT>(finish - start).count();
     std::cout << "\n";
 
     return 0;
