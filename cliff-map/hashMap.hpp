@@ -50,7 +50,7 @@
 #include <ctype.h>
 #include <errno.h>
 
-// CLWB intrinsic?.
+// CLWB intrinsic?
 #include <immintrin.h>
 
 // Pointer marking.
