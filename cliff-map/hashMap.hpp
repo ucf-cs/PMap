@@ -195,13 +195,14 @@ public:
         // The number of pairs that can fit in the table.
         size_t len;
 
-        Table(size_t tableCapacity, size_t existingSize)
+        Table(size_t tableCapacity, size_t existingSize, KVpair *pairs)
         {
             assert(tableCapacity % 2 == 0);
             assert(tableCapacity >= MIN_SIZE);
             new (&chm) CHM(tableCapacity, existingSize);
             // NOTE: We assume our pairs have already been memory mapped by this point.
             assert(pairs != NULL);
+            this->pairs = pairs;
             for (size_t i = 0; i < tableCapacity; i++)
             {
                 // Initialize these to a default, reserved value.
@@ -279,7 +280,7 @@ public:
     };
 
     // Constructor.
-    ConcurrentHashMap(const char* fileName, size_t size = Table::MIN_SIZE)
+    ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE)
     {
         // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
         // This will hold the file descriptor of our memory mapped file.
@@ -306,9 +307,9 @@ public:
             if ((uintptr_t)address == -1)
             {
                 // error
-		std::cerr << "Failed to mmap the existing file. errno = " << errno << ", " << strerror(errno)
-			  << std::endl;
-		throw std::logic_error("mmap existing file failed.");
+                std::cerr << "Failed to mmap the existing file. errno = " << errno << ", " << strerror(errno)
+                          << std::endl;
+                throw std::logic_error("mmap existing file failed.");
             }
             // Assign the KV pairs.
             ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
@@ -339,8 +340,8 @@ public:
             if (fd == -1)
             {
                 // error
-		    std::cerr << "Failed to create or open the file." << std::endl;
-		    throw std::runtime_error("cannot create or open file");
+                std::cerr << "Failed to create or open the file." << std::endl;
+                throw std::runtime_error("cannot create or open file");
             }
             // Allocate enough space for the table and the KV pairs.
             size_t length = sizeof(Table) + (sizeof(KVpair) * size);
@@ -349,14 +350,13 @@ public:
             {
                 // error
                 fprintf(stderr, "Failed to adjust file size.\n");
-		throw std::runtime_error("cannot create or open file");
+                throw std::runtime_error("cannot create or open file");
             }
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            // Assign the KV pairs.
-            ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
             // Placement new will allocate our table within the memory mapped region.
-            new (address) Table(size, 0);
+            // We pass in our address where the pairs are stored.
+            new (address) Table(size, 0, (KVpair *)((uintptr_t)address + sizeof(Table)));
         }
         // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
         close(fd);
@@ -366,9 +366,10 @@ public:
     }
 
     ConcurrentHashMap(size_t sz = Table::MIN_SIZE)
-    : ConcurrentHashMap("./hashmap.dat", sz)
-    {}
-    
+        : ConcurrentHashMap("./hashmap.dat", sz)
+    {
+    }
+
     ~ConcurrentHashMap()
     {
         size_t size = table.load()->chm.size.load();
