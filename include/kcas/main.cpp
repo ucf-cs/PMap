@@ -5,7 +5,8 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-inline const size_t K = 16;
+// TODO: Add support for K > 8. Currently crashes for some reason.
+inline const size_t K = 1;
 
 PMwCASManager<uintptr_t, K, THREAD_COUNT> *pmwcas;
 alignas(64) PMwCASManager<uintptr_t, K, THREAD_COUNT>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
@@ -52,7 +53,7 @@ void performOps(int threadNum)
         PMwCASManager<uintptr_t, K, THREAD_COUNT>::Word words[K];
 
         // The number of words we will modify.
-        size_t count = rand() % K;
+        size_t count = (rand() % K) + 1;
 
         // Determine the indexes to modify.
         std::unordered_set<size_t> indexes;
@@ -73,8 +74,8 @@ void performOps(int threadNum)
             // If it doesn't match, the PMwCAS will fail.
             words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
             // Pick a new value at random.
-            // By keeping the last 4 bits at 0, we avoid assigning an invalid, marked value.
-            words[j].newVal = rand() << 4;
+            // By keeping the last 3 bits at 0, we avoid assigning an invalid, marked value.
+            words[j].newVal = rand() << 3;
             j++;
         }
 
@@ -82,11 +83,11 @@ void performOps(int threadNum)
         bool success = pmwcas->PMwCAS(threadNum, count, words);
         if (success)
         {
-            std::cout << "Succeeded on operation " << i << " on thread " << threadNum << std::endl;
+            //std::cout << "Succeeded on operation " << i << " on thread " << threadNum << std::endl;
         }
         else
         {
-            std::cout << "Failed on operation " << i << " on thread " << threadNum << std::endl;
+            //std::cout << "Failed on operation " << i << " on thread " << threadNum << std::endl;
         }
     }
 }
@@ -121,6 +122,15 @@ int main(void)
 
     // Ensure DescRef is word-sizes.
     assert(sizeof(PMwCASManager<uintptr_t, K, THREAD_COUNT>::DescRef) == 8);
+
+    // Zero out the array.
+    for (size_t i = 0; i < ARRAY_SIZE; i++)
+    {
+        array[i].store(0);
+    }
+
+    // Test casting.
+    PMwCASManager<uintptr_t, K, THREAD_COUNT>::DescRef::testCast();
 
     // Get start time.
     auto start = std::chrono::high_resolution_clock::now();

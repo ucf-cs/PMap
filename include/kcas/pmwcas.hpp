@@ -12,6 +12,7 @@
 
 #define SFENCE __builtin_ia32_sfence()
 // TODO: Get this intrinsic, or some equivalent, working.
+// Requires a supported architecture.
 #define CLWB(p) //_mm_clwb(p)
 
 // T: The data type being dealt with. Ideally, it should just be something word-sized.
@@ -62,18 +63,18 @@ public:
         static const size_t seqSize = 64 - tidSize - fieldIDSize - isRDCSSSize - isPMwCASSize - isDirtySize;
 
     public:
-        // Thread ID.
-        // Uses enough bits to address up to P threads.
-        unsigned short tid : tidSize;
+        // Reserved bits.
+        bool isDirty : isDirtySize;
+        bool isPMwCAS : isPMwCASSize;
+        bool isRDCSS : isRDCSSSize;
+        // A sequence number to avoid the ABA problem.
+        unsigned long seq : seqSize;
         // The word modified by the index.
         // Only used by RDCSS (word) descriptors.
         unsigned short fieldID : fieldIDSize;
-        // A sequence number to avoid the ABA problem.
-        unsigned long seq : seqSize;
-        // Reserved bits.
-        bool isRDCSS : isRDCSSSize;
-        bool isPMwCAS : isPMwCASSize;
-        bool isDirty : isDirtySize;
+        // Thread ID.
+        // Uses enough bits to address up to P threads.
+        unsigned short tid : tidSize;
 
         // Base constructor.
         DescRef()
@@ -93,7 +94,6 @@ public:
             assert(sizeof(T) == sizeof(DescRef));
             assert((tidSize + fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize) == 64);
 
-            // TODO: Verify this works as expected.
             tid = ((size_t)ptr >> (fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << tidSize) - 1);
             fieldID = ((size_t)ptr >> (seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << fieldIDSize) - 1);
             seq = ((size_t)ptr >> (isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << seqSize) - 1);
@@ -105,13 +105,62 @@ public:
         // Defines conversion from DescRef to T.
         operator T() const
         {
-            // TODO: Verify this works as expected.
             return (T)(((uintptr_t)tid << (fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) +
                        ((uintptr_t)fieldID << (seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) +
                        ((uintptr_t)seq << (isRDCSSSize + isPMwCASSize + isDirtySize)) +
                        ((uintptr_t)isRDCSS << (isPMwCASSize + isDirtySize)) +
                        ((uintptr_t)isPMwCAS << (isDirtySize)) +
                        ((uintptr_t)isDirty));
+        }
+
+        static void testCast()
+        {
+            DescRef desc;
+            T castDesc;
+            DescRef castBackDesc;
+            for (size_t i = 0; i < tidSize; i++)
+            {
+                for (size_t j = 0; j < fieldIDSize; j++)
+                {
+                    for (size_t k = 0; k < seqSize; k++)
+                    {
+                        desc.tid = i;
+                        desc.fieldID = j;
+                        desc.seq = k;
+                        castDesc = (T)desc;
+                        for (size_t l = 0; l < isRDCSSSize; l++)
+                        {
+                            for (size_t m = 0; m < isPMwCASSize; m++)
+                            {
+                                for (size_t n = 0; n < isDirtySize; n++)
+                                {
+                                    if (l != 0)
+                                    {
+                                        desc.isRDCSS = true;
+                                        castDesc = castDesc | RDCSSFlag;
+                                    }
+                                    if (m != 0)
+                                    {
+                                        desc.isPMwCAS = true;
+                                        castDesc = castDesc | PMwCASFlag;
+                                    }
+                                    if (n != 0)
+                                    {
+                                        desc.isDirty = true;
+                                        castDesc = castDesc | DirtyFlag;
+                                    }
+                                    castBackDesc = (DescRef)castDesc;
+                                    if (desc != castBackDesc)
+                                    {
+                                        std::cout << "Something is wrong with our custom type casting!" << std::endl;
+                                    }
+                                    assert(desc == castBackDesc);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     };
     // Word descriptor
@@ -160,6 +209,7 @@ public:
     DescRef createNew(size_t threadNum, size_t size, Word *words)
     {
         assert(threadNum < P);
+        assert(size > 0);
 
         Descriptor *desc = &(descriptors[threadNum]);
         // Incrementing the sequence number will invalidate this descriptor.
@@ -169,10 +219,6 @@ public:
         // Sort the words.
         std::sort(words, words + size);
         // Make sure the words are sorted correctly.
-        for (size_t i = 0; i < size; i++)
-        {
-            std::cout << words[i].address << std::endl;
-        }
         for (size_t i = 0; i < size - 1; i++)
         {
             assert(((uintptr_t)words[i].address) < ((uintptr_t)words[i + 1].address));
@@ -182,7 +228,6 @@ public:
         desc->count = size;
         for (size_t i = 0; i < size; i++)
         {
-            // TODO: Ensure all values copy over properly.
             desc->words[i] = words[i];
         }
 
@@ -242,7 +287,7 @@ public:
         }
     }
     template <class U>
-    U CASField(DescRef desc, U &fExp, U fNew, std::atomic<U> *field, bool &success)
+    bool CASField(DescRef desc, U &fExp, U fNew, std::atomic<U> *field, bool &success)
     {
         while (true)
         {
@@ -250,15 +295,16 @@ public:
             if (desc.seq != descriptors[desc.tid].seq)
             {
                 success = false;
-                return expVal;
+                return false;
             }
             if (expVal != fExp)
             {
-                return fExp;
+                fExp = expVal;
+                return false;
             }
             if (field->compare_exchange_strong(fExp, fNew))
             {
-                return fNew;
+                return true;
             }
         }
     }
@@ -289,11 +335,32 @@ public:
     // Format: address, oldVal, newVal
     bool PMwCAS(size_t threadNum, size_t size, Word *words)
     {
+        assert(size > 0);
         // Create a "new" descriptor.
         DescRef desc = createNew(threadNum, size, words);
 
         // Run PMwCAS on our generated descriptor.
-        return PMwCAS(desc);
+        bool ret = PMwCAS(desc);
+
+        // Confirm that nothing was left unfinished.
+        // Check every word modified.
+        for (size_t i = 0; i < size; i++)
+        {
+            // Cast the word to a DescRef.
+            DescRef leftoverRef = (DescRef)descriptors[threadNum].words[i].address->load();
+            // If any descriptor flags are still set.
+            if (leftoverRef.isPMwCAS || leftoverRef.isRDCSS)
+            {
+                // And the thread number matches
+                if (threadNum == leftoverRef.tid)
+                {
+                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
+                }
+                //if(descriptors[threadNum].seq==leftoverRef.seq){}
+            }
+        }
+
+        return ret;
     }
     // Perform a persistent, multi-word CAS based on a descriptor pointer.
     bool PMwCAS(DescRef desc)
@@ -313,7 +380,13 @@ public:
             wordDesc.isDirty = false;
 
             // Attempt to place the descriptor using RDCSS.
-            T rval = InstallMwCASDescriptor(wordDesc);
+            bool success = true;
+            T rval = InstallMwCASDescriptor(wordDesc, success);
+            // If our descriptor is outdated, the PMwCAS has already finished (succeeded or failed).
+            if (!success)
+            {
+                break;
+            }
             // If the installation succeeded.
             if (rval == descriptors[desc.tid].words[i].oldVal)
             {
@@ -323,6 +396,14 @@ public:
             // If it failed because of another PMwCAS in progress.
             else if (((DescRef)rval).isPMwCAS)
             {
+                // If another thread already started inserting our PMwCAS descriptors.
+                // NOTE: This case wasn't handled in the paper, for some reason.
+                if (rval == (T)desc)
+                {
+                    // No need to insert more RDCSS descriptors.
+                    // Just finish the work installing PMwCAS descriptors.
+                    break;
+                }
                 // If the value stored there has not yet been persisted.
                 if (((DescRef)rval).isDirty)
                 {
@@ -345,7 +426,7 @@ public:
             }
         }
 
-        // If we successfully inserted descriptors at all locations.
+        // If we (may have) successfully inserted descriptors at all locations.
         if (st == Succeeded)
         {
             // Persist all target words.
@@ -357,11 +438,10 @@ public:
                 persistDesc.isRDCSS = false;
                 persistDesc.isPMwCAS = true;
                 persistDesc.isDirty = true;
-                persist(descriptors[desc.tid].words[i].address, (T)persistDesc);
                 // DEBUG: This should typically succeed. Keep a close eye on it.
-                if (((DescRef)descriptors[desc.tid].words[i].address->load()).isDirty)
+                if (persist(descriptors[desc.tid].words[i].address, (T)persistDesc) != (T)persistDesc)
                 {
-                    std::cout << "Failed to persist!" << std::endl;
+                    //std::cout << "Failed to persist!" << std::endl;
                 }
             }
         }
@@ -384,18 +464,24 @@ public:
         }
 
         // Install the final values.
+        // DEBUG: Used to check if CAS failed.
+        bool CAS1 = true;
+        bool CAS2 = true;
         for (size_t i = 0; i < descriptors[desc.tid].count; i++)
         {
+        retryInstall:
             // If we succeeded, we will place the new values.
             // If we failed, we will restore the old values.
             T v = ((status == Succeeded)
                        ? descriptors[desc.tid].words[i].newVal
                        : descriptors[desc.tid].words[i].oldVal);
-            // We expect a PMwCAS descriptor that hasn't persisted.
+            // We expect a PMwCAS descriptor with a fieldID matching the current word.
+            desc.fieldID = i;
+            // And one that hasn't persisted.
             T expected = (T)((uintptr_t)desc | PMwCASFlag | DirtyFlag);
             // Replace it with a value, unpersisted.
             T rval = (T)expected;
-            CASField<T>(desc, rval, (T)((uintptr_t)v | DirtyFlag), descriptors[desc.tid].words[i].address, success);
+            CAS1 = CASField<T>(desc, rval, (T)((uintptr_t)v | DirtyFlag), descriptors[desc.tid].words[i].address, success);
             if (!success)
             {
                 break;
@@ -406,7 +492,7 @@ public:
             {
                 // Try again, assuming that the descriptor *is* persisted.
                 T expected2 = (T)((uintptr_t)expected & ~DirtyFlag);
-                CASField<T>(desc, expected2, v, descriptors[desc.tid].words[i].address, success);
+                CAS2 = CASField<T>(desc, expected2, v, descriptors[desc.tid].words[i].address, success);
                 if (!success)
                 {
                     break;
@@ -414,6 +500,28 @@ public:
             }
             // Persist any change that occurs.
             persist(descriptors[desc.tid].words[i].address, v);
+
+            // Cast the word to a DescRef.
+            DescRef leftoverRef = (DescRef)descriptors[desc.tid].words[i].address->load();
+            // If any descriptor flags are still set.
+            if (leftoverRef.isPMwCAS || leftoverRef.isRDCSS)
+            {
+                // And the thread number matches
+                if (desc.tid == leftoverRef.tid)
+                {
+                    goto retryInstall;
+                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
+                }
+                //if(descriptors[threadNum].seq==leftoverRef.seq){}
+            }
+            // There should never be an RDCSS of our own here.
+            if (desc.tid == leftoverRef.tid)
+            {
+                if (leftoverRef.isRDCSS)
+                {
+                    std::cout << "Found an RDCSS for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
+                }
+            }
         }
         // Return our final success (or failure).
         assert((status & AddressMask) != Undecided);
@@ -432,6 +540,7 @@ public:
             // If it's part of an RDCSS.
             if ((uintptr_t)v & RDCSSFlag)
             {
+                // TODO: Stuck in a loop here. v can be associated with an outdated descriptor.
                 // Finish the RDCSS.
                 CompleteInstall((DescRef)v);
                 // And try to read it again.
@@ -470,15 +579,13 @@ public:
 private:
     // Use RDCSS to replace a value with a descriptor.
     // desc should reference a valid tid and fieldID to identify the correct word descriptor.
-    T InstallMwCASDescriptor(DescRef desc)
+    T InstallMwCASDescriptor(DescRef desc, bool &success)
     {
         // Mark our descriptor.
         desc.isRDCSS = true;
         T val;
         while (true)
         {
-            // Flag to indicate whether or not our descriptor modifications worked.
-            bool success = true;
             // This old value could be associated with a newer descriptor.
             // CASField will fail if the sequence numbers don't match, so problems with using a newer descriptor by accident will be handled.
             T oldVal = descriptors[desc.tid].words[desc.fieldID].oldVal;
@@ -489,7 +596,6 @@ private:
             // CAS can fail if the sequence numbers didn't match.
             if (!success)
             {
-                // TODO: Need to report sequence mismatch failure here, somehow.
                 return val;
             }
             // Make sure the RDCSSFlag is at the same bit as the isRDCSS bitfield.
@@ -508,6 +614,22 @@ private:
                 // Finish the installation.
                 CompleteInstall(desc);
             }
+
+            // Another situation seemingly not handled by the paper.
+            // Somehow, the install doesn't actually complete.
+            // Cast the word to a DescRef.
+            DescRef leftoverRef = (DescRef)descriptors[desc.tid].words[desc.fieldID].address->load();
+            // If any descriptor flags are still set.
+            if (leftoverRef.isRDCSS)
+            {
+                // And the thread number matches
+                if (desc.tid == leftoverRef.tid)
+                {
+                    continue;
+                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
+                }
+            }
+
             break;
         }
         // return the value previously in the target address.
@@ -527,7 +649,7 @@ private:
         bool success = true;
         // Determine whether we are placing the KCAS descriptor or restoring the old value.
         bool u = (readField<Status>(desc, &descriptors[desc.tid].status, success) == Undecided);
-        // Mismatch in sequence numbers just means some other thread finished this already.
+        // Mismatch in sequence numbers just means the owning thread finished this already.
         if (!success)
         {
             return;
