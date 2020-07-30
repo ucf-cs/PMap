@@ -115,7 +115,12 @@ int main(void)
     // Create our threads.
     std::thread threads[THREAD_COUNT];
 
+    // Create a PMwCAS manager.
+    // All PMwCAS operations should run through here.
     pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>();
+
+    // Ensure DescRef is word-sizes.
+    assert(sizeof(PMwCASManager<uintptr_t, K, THREAD_COUNT>::DescRef) == 8);
 
     // Get start time.
     auto start = std::chrono::high_resolution_clock::now();
