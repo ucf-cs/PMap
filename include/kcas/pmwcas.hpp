@@ -289,6 +289,7 @@ public:
     template <class U>
     bool CASField(DescRef desc, U &fExp, U fNew, std::atomic<U> *field, bool &success)
     {
+        U fExpCopy = fExp;
         while (true)
         {
             U expVal = field->load();
@@ -302,33 +303,14 @@ public:
                 fExp = expVal;
                 return false;
             }
-            if (field->compare_exchange_strong(fExp, fNew))
+            bool CAS = field->compare_exchange_strong(fExp, fNew);
+            if (CAS)
             {
+                // TODO: This should never happen, so why does it?
+                assert(fExpCopy == fExp);
                 return true;
             }
         }
-    }
-
-    // Fast sort for small arrays.
-    // TODO: Unused. Consider removing.
-    void insertionSortRecursive(size_t n, size_t *addresses, size_t *sorts)
-    {
-        if (n <= 0)
-        {
-            return;
-        }
-        insertionSortRecursive(n - 1, addresses, sorts);
-        size_t x = addresses[n];
-        size_t y = sorts[n];
-        size_t j = n - 1;
-        while (j >= 0 && addresses[j] > x)
-        {
-            addresses[j + 1] = addresses[j];
-            sorts[j + 1] = sorts[j];
-        }
-        addresses[j + 1] = x;
-        sorts[j + 1] = y;
-        return;
     }
 
     // Used to hide descriptor construction.
@@ -529,7 +511,7 @@ public:
     }
     // Attempt to read an address.
     // We must ensure all flag conditions have been handled before reading the address.
-    T PMwCASRead(std::atomic<T> *address)
+    T PMwCASRead(std::atomic<T> *address, size_t DEBUGtid)
     {
         while (true)
         {
@@ -557,6 +539,11 @@ public:
             // If the value is part of a PMwCAS.
             if ((uintptr_t)v & PMwCASFlag)
             {
+                // DEBUG: This should never happen.
+                if (((DescRef)v).tid == DEBUGtid)
+                {
+                    std::cout << "Found a PMwCAS for own tid " << ((DescRef)v).tid << " with seq# " << ((DescRef)v).seq << std::endl;
+                }
                 // Help complete the KCAS.
                 PMwCAS((DescRef)v);
                 // And try to read it again.
@@ -592,7 +579,9 @@ private:
             // This will be replaced with whatever was actually in the address field when we did the CAS.
             val = oldVal;
             // Attempt the replacement.
-            CASField<T>(desc, val, (T)desc, descriptors[desc.tid].words[desc.fieldID].address, success);
+            bool CAS = CASField<T>(desc, val, (T)desc, descriptors[desc.tid].words[desc.fieldID].address, success);
+            assert((CAS && val == oldVal) ||
+                   (!CAS && val != oldVal));
             // CAS can fail if the sequence numbers didn't match.
             if (!success)
             {
@@ -617,6 +606,7 @@ private:
 
             // Another situation seemingly not handled by the paper.
             // Somehow, the install doesn't actually complete.
+            // TODO: Fix this issue.
             // Cast the word to a DescRef.
             DescRef leftoverRef = (DescRef)descriptors[desc.tid].words[desc.fieldID].address->load();
             // If any descriptor flags are still set.
@@ -625,7 +615,7 @@ private:
                 // And the thread number matches
                 if (desc.tid == leftoverRef.tid)
                 {
-                    continue;
+                    //continue;
                     std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
                 }
             }

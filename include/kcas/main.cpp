@@ -5,11 +5,10 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-// TODO: Add support for K > 8. Currently crashes for some reason.
+// TODO: Add support for K > 8. Currently fails to link for some reason.
 inline const size_t K = 1;
 
 PMwCASManager<uintptr_t, K, THREAD_COUNT> *pmwcas;
-alignas(64) PMwCASManager<uintptr_t, K, THREAD_COUNT>::Descriptor descriptors[NUM_OPS * THREAD_COUNT];
 
 // Input: 1- Array of threads that will execute a fucntion.
 //        2- A function pointer to that function.
@@ -72,7 +71,7 @@ void performOps(int threadNum)
             words[j].address = &array[index];
             // Read the current value at that index.
             // If it doesn't match, the PMwCAS will fail.
-            words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
+            words[j].oldVal = pmwcas->PMwCASRead(&array[index], threadNum);
             // Pick a new value at random.
             // By keeping the last 3 bits at 0, we avoid assigning an invalid, marked value.
             words[j].newVal = rand() << 3;
