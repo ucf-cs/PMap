@@ -5,18 +5,22 @@
 #include <iomanip>
 #include <cstdio>
 #include <memory>
+#include <cassert>
+#include <atomic>
 #include <vector>
 #include <algorithm>
+#include <new>
 
-static constexpr int CACHELINESZ=64;
+#ifndef DEFAULT_CACHELINE_SIZE
+static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
+#else
+static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
+#endif
 
 #ifndef TEST_CONFLICTS
 #define TEST_CONFLICTS 0
 #endif
 
-#include "hashMap.hpp"
-#include <map>
-#include <mutex>
 
 struct TestOptions
 {
@@ -29,89 +33,21 @@ struct TestOptions
   std::string filename   = "./chashmap.dat";
 };
 
+using KeyT = size_t;
+using ValT = size_t;
+
+
+#include "test-ucfMap.hpp"
+#include "test-stlMap.hpp"
+#include "test-onefileMap.hpp"
+
 //
 // define container and operations
 // i.e., insert, erase, count
 
-using mutex_type  = std::mutex;
-using guard_type = std::lock_guard<mutex_type>; 
-
-mutex_type global_lock;
-
-using KeyT = size_t;
-using ValT = size_t; 
-
-using container_type = ConcurrentHashMap<KeyT, ValT>; 
-//~ using container_type = std::map<KeyT, ValT>;
-
-bool insert(ConcurrentHashMap<KeyT, ValT>& c, ValT el)
-{
-  ValT shiftedEl = el << 3;
-  assert(shiftedEl >> 3 == el);
-
-  // std::cout << "i " << shiftedEl << std::endl;
-
-  c.put(shiftedEl, shiftedEl);
-  return true;
-}
-
-bool erase(ConcurrentHashMap<KeyT, ValT>& c, ValT el)
-{
-  // std::cout << "e " << (el << 3) << std::endl;
-
-  return c.remove(el << 3);
-}
-
-size_t count(ConcurrentHashMap<KeyT, ValT>& c)
-{
-  return c.size();
-}
-
-ConcurrentHashMap<KeyT, ValT>& 
-construct(const TestOptions& opt, ConcurrentHashMap<KeyT, ValT>*)
-{
-  ConcurrentHashMap<KeyT, ValT>* cont = new ConcurrentHashMap<KeyT, ValT>(opt.filename.c_str(), 1 << opt.capacity);
-
-	if (cont == nullptr) throw std::runtime_error("could not allocate");
-
-	return *cont;
-}
-
-
-bool insert(std::map<KeyT, ValT>& c, ValT el)
-{
-  using map_element = std::map<KeyT, ValT>::value_type;
-
-  //~ std::cerr << 'i' << el << ' ' << th << std::endl;
-
-  guard_type g(global_lock);
-
-  return c.insert(map_element(el, el)).second;
-}
-
-bool erase(std::map<KeyT, ValT>& c, KeyT el)
-{ 
-  //~ std::cerr << 'e' << el << ' ' << th << std::endl;
-  
-	guard_type g(global_lock);
-
-  return c.erase(el) == 1;
-}
-
-size_t count(const std::map<KeyT, ValT>& c)
-{
-  return c.size();
-}
-
-std::map<KeyT, ValT>&
-construct(const TestOptions&, std::map<KeyT, ValT>*)
-{
-  std::map<KeyT, ValT>* cont = new std::map<KeyT, ValT>;
-
-	if (cont == nullptr) throw std::runtime_error("could not allocate");
-
-	return *cont;
-}
+// using container_type = ucf::container_type; 
+// using container_type = stl::container_type; 
+using container_type = onefile::container_type; 
 
 
 // end define container
@@ -147,7 +83,7 @@ struct alignas(CACHELINESZ) ThreadInfo
   }
 
   ThreadInfo()
-  : ThreadInfo(nullptr, 0, 0, 0)
+  : ThreadInfo(nullptr, 0, 0, 1)
   {}
 };
 
@@ -157,15 +93,15 @@ void fail()
 }
 
 /// counts number of threads that are ready to run
-size_t waiting_threads;
+std::atomic<size_t> waiting_threads;
 
 /// waits until all threads have been created and are ready to run
 void sync_start()
 {
-  assert(waiting_threads);
-  __sync_fetch_and_sub(&waiting_threads, 1);
+  assert(waiting_threads.load());
+  waiting_threads.fetch_add(-1);
 
-  while (waiting_threads) __sync_synchronize();
+  while (waiting_threads.load()) {} 
 }
 
 /// computes number of operations that a thread will carry out
@@ -249,7 +185,7 @@ std::atomic<bool> ptest_failed(false);
 void container_test_prefix(ThreadInfo& ti)
 {
   const size_t tinum     = ti.num;
-	const size_t maxops    = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  const size_t maxops    = opsPerThread(ti.num_threads, ti.pnoiter, 0);
   size_t       numops    = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
   const size_t nummain   = opsMainLoop(numops);
   size_t       wrid      = 0;
@@ -280,21 +216,19 @@ void container_test_prefix(ThreadInfo& ti)
 void container_test(ThreadInfo& ti)
 {
   const size_t tinum   = ti.num;
-	const size_t maxops  = opsPerThread(ti.num_threads, ti.pnoiter, 0);
-  size_t       numops  = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
-  const size_t nummain = opsMainLoop(numops);
+  const size_t maxops  = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  const size_t numops  = opsPerThread(ti.num_threads, ti.pnoiter, tinum);
+  size_t       nummain = opsMainLoop(numops);
   size_t       wrid    = numops - nummain;
   size_t       rdid    = wrid / 2;
 
   try
   {
     // set numops to nummain (after prefix has been executed)
-    numops = nummain;
-
-    assert(numops > 0);
-    while (numops)
+    assert(nummain > 0);
+    while (nummain)
     {
-      if (numops % 2)
+      if (nummain % 2)
       {
         int    elem = genElem(wrid, tinum, ti.num_threads, maxops);
         int    succ = insert(*ti.container, elem);
@@ -309,12 +243,12 @@ void container_test(ThreadInfo& ti)
         int    elem = genElem(rdid, tinum, ti.num_threads, maxops);
         int    succ = erase(*ti.container, elem);
         
-				++rdid;
+	      ++rdid;
 	      if (succ > 0) ++ti.succ; else ++ti.fail;
 	      // std::cout << "erase " << elem << " " << succ << std::endl;
       }
 
-      --numops;
+      --nummain;
     }
 
     // ti.container->getAllocator().release_memory();
@@ -344,7 +278,7 @@ void ptest(ThreadInfo& ti, time_point& starttime)
 size_t sequential_test(const TestOptions& opt)
 {
   container_type* const           tag  = nullptr;
-	std::unique_ptr<container_type> cont{&construct(opt, tag)};
+  std::unique_ptr<container_type> cont{&construct(opt, tag)};
   ThreadInfo                      info{cont.get(), 0, opt.numops, 1};
 
   std::cout << std::endl;
@@ -357,7 +291,7 @@ size_t sequential_test(const TestOptions& opt)
   time_point endtime = std::chrono::system_clock::now();
   const int  elapsedtime = std::chrono::duration_cast<duration_unit>(endtime-starttime).count();
   const int  actsize = count(*cont);
-	const int  expctsize = expectedSize(1, opt.numops);
+  const int  expctsize = expectedSize(1, opt.numops);
   
   if (expctsize != actsize)
   {
@@ -380,19 +314,28 @@ int parallel_test(const TestOptions& opt)
   std::cout << std::endl;
 
   std::list<std::thread>          exp_threads;
-  std::list<ThreadInfo>           thread_info;
-	container_type* const           tag  = nullptr;
-  std::unique_ptr<container_type> cont{&construct(opt, tag)};
+  std::vector<ThreadInfo>         thread_info(opt.numthreads, ThreadInfo{});
+  container_type* const           tag  = nullptr;
+  std::unique_ptr<container_type> cont{&construct(opt, tag)}; // for lifetime management
+  container_type*                 contptr = cont.get();
   time_point                      starttime;
 
   waiting_threads = opt.numthreads;
 
   // spawn
-  for (size_t i = 0; i < opt.numthreads; ++i)
+  for (size_t i = 1; i < opt.numthreads; ++i)
   {
-    thread_info.push_back(ThreadInfo(cont.get(), i, opt.numops, opt.numthreads));
-    exp_threads.emplace_back(ptest, std::ref(thread_info.back()), std::ref(starttime));
+    ThreadInfo& ti = thread_info.at(i);
+
+    ti = ThreadInfo(contptr, i, opt.numops, opt.numthreads);
+    exp_threads.emplace_back(ptest, std::ref(ti), std::ref(starttime));
   }
+
+  // use main thread as worker
+  ThreadInfo& thisTi = thread_info.front();
+
+  thisTi = ThreadInfo(contptr, 0, opt.numops, opt.numthreads);
+  ptest(thisTi, starttime); 
 
   // join
   for (std::thread& thr : exp_threads) thr.join();
@@ -412,8 +355,9 @@ int parallel_test(const TestOptions& opt)
 
   for (ThreadInfo& info : thread_info)
   {
-    std::cout << "i: " << info.num << "  "
-              << info.succ << "(" << (info.fail + info.succ) << ")"
+    std::cout << ((info.succ == (info.fail + info.succ)) ? "   " : "!! ")
+              << std::setw(3) << info.num << ": "
+              << info.succ << " of (" << (info.fail + info.succ) << ")"
               //~ << " [ " << thread_info[i].cpunode_start
               //~ << " - " << thread_info[i].cpunode_end
               //~ << " ]  x "
@@ -449,44 +393,47 @@ void prnGen(size_t numThreads, int nops)
 
   for (size_t tinum = 0; tinum < numThreads; ++tinum)
 	{
-    size_t       numops = opsPerThread(numThreads, nops, tinum);
-		const size_t nummain = opsMainLoop(numops);
-		size_t       wrid = 0;
-
-	  std::cout << tinum << ": ";
-		while (numops > nummain)
     {
-		  dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
-			++wrid;
-		  std::cout << ", i" << dataset.back();
-		}
+      size_t       numops  = opsPerThread(numThreads, nops, tinum);
+		  const size_t nummain = opsMainLoop(numops);
+		  size_t       wrid = 0;
 
-		std::cout << " - ";
-
-    numops = opsPerThread(numThreads, nops, tinum);;
-    wrid   = numops - nummain;
-		numops = nummain;
-		
-		size_t rdid    = wrid / 2;
-
-		while (numops)
-		{
-      if (numops % 2)
+	    std::cout << tinum << ": " << numops << "/" << nummain << std::endl;
+		  while (numops > nummain)
       {
-			  dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
-				++wrid;
-			  std::cout << ", i" << dataset.back();
-      }
-      else
+		    dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
+			  ++wrid; --numops;
+		  // std::cout << ", i" << dataset.back();
+		  }
+    }
+
+    {
+      std::cout << " - ";
+
+      const size_t numops  = opsPerThread(numThreads, nops, tinum);
+      size_t       nummain = opsMainLoop(numops);
+      size_t       wrid    = numops - nummain;
+      size_t       rdid    = wrid / 2;
+
+      while (nummain)
       {
-			  std::cout << ", e" << genElem(rdid, tinum, numThreads, maxops);
-				++rdid;
+        if (nummain % 2)
+        {
+          dataset.push_back(genElem(wrid, tinum, numThreads, maxops));
+          ++wrid;
+          // std::cout << ", i" << dataset.back();
+        }
+        else
+        {
+          // std::cout << ", e" << genElem(rdid, tinum, numThreads, maxops);
+          ++rdid;
+        }
+
+        --nummain;
       }
 
-      --numops;
-	  }
-
-		std::cout << std::endl;
+		  std::cout << std::endl;
+    }
 	}
 
 	std::sort(dataset.begin(), dataset.end());
@@ -575,7 +522,7 @@ void help(const std::string& executable)
 	    << "-p num   number of parallel runs (default: " << tmp.numruns << ")\n"
 	    << "-c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
 	    << "-s       if specified, a sequential test is run before the parallel tests.\n"
-	    << "-d       if specified, the generated data test is printed before the run.\n"
+	    << "-d       if specified, the generated data test is printed and tested for uniqueness.\n"
 	    << "-h       displays this help message\n"
 	    << std::endl;
 

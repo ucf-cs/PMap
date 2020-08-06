@@ -12,17 +12,34 @@ ifeq ($(BUILDTYPE),debug)
 endif
 
 WARNFLAG ?= -Wall -Wextra -pedantic
+ARCHFLAG ?= -DDEFAULT_CACHELINE_SIZE=64 # should not be needed for a c++17 compliant compiler
 
-INCLUDES := -I../include -I../cliff-map
+DATAFILE ?= /mnt/pmem/pm1/hashtest.dat
+VALGRIND ?= /home/peterp/local/bin/valgrind --tool=pmemcheck
+VGFLAGS  ?= --flush-check=yes --flush-align=yes --mult-stores=yes
+CHKARGS  ?= -n 1000000 -c 20 -f $(DATAFILE) -t 48 
+
+INCLUDES := -I../include -I../cliff-map -I./onefile
+LIBS     := -lpmemobj
 TARGET   := ../bin/unique-elems-test.bin
 
 .PHONY: default
 default: $(TARGET)
 
-$(TARGET): unique-elems-test.cpp ../cliff-map/hashMap.hpp ../include/define.hpp
+$(TARGET): unique-elems-test.cpp test-onefileMap.hpp ../cliff-map/hashMap.hpp ../include/define.hpp 
 	mkdir -p ../bin
-	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(INCLUDES) $< -o $@
+	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(ARCHFLAG) $(INCLUDES) $(LIBS) $< -o $@
+
+.PHONY: valcheck
+valcheck: $(TARGET)
+	$(VALGRIND) $(VGFLAGS) $(TARGET) $(CHKARGS)
+	rm -f $(DATAFILE) 
+
+.PHONY: check
+check: $(TARGET)
+	$(TARGET) $(CHKARGS)
+#rm -f $(DATAFILE) /mnt/pmem/pm1/PFMKtests
 
 .PHONY: clean
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) $(DATAFILE) /mnt/pmem/pm1/PFMKtests
