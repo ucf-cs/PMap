@@ -46,6 +46,7 @@ void threadRunner(std::thread *threads, void function(int threadNum))
 // Performs a bunch of random operations.
 void performOps(int threadNum)
 {
+    localThreadNum = threadNum;
     for (size_t i = 0; i < NUM_OPS; i++)
     {
         // A words array. Place words to modify here.
@@ -71,7 +72,7 @@ void performOps(int threadNum)
             words[j].address = &array[index];
             // Read the current value at that index.
             // If it doesn't match, the PMwCAS will fail.
-            words[j].oldVal = pmwcas->PMwCASRead(&array[index], threadNum);
+            words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
             // Pick a new value at random.
             // By keeping the last 3 bits at 0, we avoid assigning an invalid, marked value.
             words[j].newVal = rand() << 3;
