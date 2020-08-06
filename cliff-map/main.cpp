@@ -1,5 +1,3 @@
-// This file includes methods that will be shared between all test cases
-
 #include "main.hpp"
 
 // Input: 1- Array of threads that will execute a fucntion.

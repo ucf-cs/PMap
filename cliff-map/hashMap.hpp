@@ -809,7 +809,7 @@ public:
             }
 
             // Atomically update the value.
-            // TODO: Replace this with an arbitrary CAS function to be passed in.
+            // Can use a custom replacement function if preferred.
             Value actualValue = CAS(table, idx, V, newVal);
             // If we succeeded.
             if (actualValue == V)

@@ -6,6 +6,7 @@
         {
             "label": "Build",
             "type": "shell",
+            //"command": "g++ -Iinclude -std=c++17 -pthread -g2 -Wall -Wextra -pedantic -p RMATTest.cpp",
             //"command": "g++ -std=c++17 -pthread -march=native -O3 -flto -DNDEBUG main.cpp",
             "command": "g++ -Iinclude -std=c++17 -pthread -g2 -Wall -Wextra -pedantic -p cliff-map/main.cpp",
             "group": {
