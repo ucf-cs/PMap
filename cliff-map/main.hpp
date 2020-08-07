@@ -16,10 +16,11 @@
 #include "hash.hpp"
 #include "hashMap.hpp"
 
-typedef std::chrono::nanoseconds TIME_UNIT;
+inline const size_t TABLE_SIZE = 65536;
 
-typedef void *Key;
-typedef void *Value;
+typedef std::chrono::nanoseconds TIME_UNIT;
+typedef size_t Key;
+typedef size_t Value;
 
 ConcurrentHashMap<Key, Value, xxhash<Key>> *hashMap;
 // Create a pool of valid pointers.

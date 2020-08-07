@@ -39,37 +39,51 @@ void performOps(int threadNum)
     // TODO: Consider logging these results.
     for (size_t i = 0; i < NUM_OPS; i++)
     {
-        // Choose a random object from the pool.
-        size_t index = rand() % PTR_POOL_SIZE;
-        void *ptr = &pointerPool[index];
-        assert((uintptr_t)ptr % 8 == 0);
+        // Pick a random key/value.
+        size_t val = rand() << 3;
+        // Keep trying until we fetch a non-reserved value.
+        while (ConcurrentHashMap<size_t, size_t>::isKeyReserved(val) ||
+               ConcurrentHashMap<size_t, size_t>::isValueReserved(val))
+        {
+            val = rand() << 3;
+        }
+        // Make sure we have an unmarked key/value.
+        assert((uintptr_t)val % 8 == 0);
         // TODO: Consider not performing rand() on the threads, and instead pre-calculate them.
-        switch (rand() % 7)
+        switch (rand() % 8)
         {
         case 0:
+            // Get the size of the hash map.
             hashMap->size();
             break;
         case 1:
+            // Check if the hash map is empty.
             hashMap->isEmpty();
             break;
         case 2:
-            hashMap->containsKey(ptr);
+            // Check to see if there is a value associated with a specific key.
+            hashMap->containsKey(val);
             break;
         case 3:
-            hashMap->put(ptr, ptr);
+            // Insert a value.
+            hashMap->put(val, val);
             break;
         case 4:
-            hashMap->putIfAbsent(ptr, ptr);
+            // Insert a value, but do not replace an existing value.
+            hashMap->putIfAbsent(val, val);
             break;
         case 5:
-            hashMap->remove(ptr);
+            // Remove the value associated with this key.
+            hashMap->remove(val);
             break;
         case 6:
-            hashMap->replace(ptr, ptr, &pointerPool[rand() % PTR_POOL_SIZE]);
+            // Insert a value only if it will replace an old value.
+            hashMap->replace(val, val, rand() << 3);
             break;
         case 7:
-            // Not a meaningful case, since we are currently working with pointers, not ints.
-            hashMap->update(ptr, ptr, ConcurrentHashMap<Key, Value, xxhash<Key>>::Table::increment);
+            // An arbitrary update function.
+            // In this case, increment the current value by 1.
+            hashMap->update(val, 1 << 3, ConcurrentHashMap<Key, Value, xxhash<Key>>::Table::increment);
             break;
         }
     }
@@ -83,8 +97,14 @@ void preinsert(int threadNum)
         // 50% prefill.
         if (rand() % 2)
         {
-            void *address = &pointerPool[rand() % PTR_POOL_SIZE];
-            hashMap->put(address, address);
+            // Pick a random key/value.
+            size_t val = rand() << 3;
+            // Keep trying until we fetch a non-reserved value.
+            while (ConcurrentHashMap<size_t, size_t>::isValueReserved(val) || ConcurrentHashMap<size_t, size_t>::isKeyReserved(val))
+            {
+                val = rand() << 3;
+            }
+            hashMap->put(val, val);
             //std::cout << std::endl;
             //hashMap->print();
         }
@@ -117,7 +137,7 @@ int main(void)
     std::thread threads[THREAD_COUNT];
 
     // Create the hash map.
-    hashMap = new ConcurrentHashMap<Key, Value, xxhash<Key>>();
+    hashMap = new ConcurrentHashMap<size_t, size_t, xxhash<Key>>(TABLE_SIZE);
 
     // Pre-insertion step.
     //threadRunner(threads, preinsert);
