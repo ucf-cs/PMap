@@ -39,15 +39,17 @@ using ValT = size_t;
 
 #include "test-ucfMap.hpp"
 #include "test-stlMap.hpp"
+#include "test-pmemMap.hpp"
 #include "test-onefileMap.hpp"
 
 //
 // define container and operations
 // i.e., insert, erase, count
 
-// using container_type = ucf::container_type; 
+using container_type = ucf::container_type; 
 // using container_type = stl::container_type; 
-using container_type = onefile::container_type; 
+// using container_type = onefile::container_type; 
+// using container_type = pm::container_type; 
 
 
 // end define container
@@ -609,6 +611,10 @@ int main(int argc, char** args)
     }
     
     std::cout << std::endl;
+  }
+  catch (const std::runtime_error& err)
+  {
+    std::cout << "error in parallel test: " << err.what() << std::endl;
   }
   catch (...)
   {

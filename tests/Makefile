@@ -19,14 +19,15 @@ VALGRIND ?= /home/peterp/local/bin/valgrind --tool=pmemcheck
 VGFLAGS  ?= --flush-check=yes --flush-align=yes --mult-stores=yes
 CHKARGS  ?= -n 1000000 -c 20 -f $(DATAFILE) -t 48 
 
-INCLUDES := -I../include -I../cliff-map -I./onefile
-LIBS     := -lpmemobj
+INCLUDES := -I../include -I../cliff-map -I/home/peterp/xgit/OneFile -I/home/peterp/local/include
+LIBS     := -L/home/peterp/local/lib -lpmemobj
 TARGET   := ../bin/unique-elems-test.bin
+HEADERS  := test-onefileMap.hpp test-pmemMap.hpp test-ucfMap.hpp test-stlMap.hpp
 
 .PHONY: default
 default: $(TARGET)
 
-$(TARGET): unique-elems-test.cpp test-onefileMap.hpp ../cliff-map/hashMap.hpp ../include/define.hpp 
+$(TARGET): unique-elems-test.cpp $(HEADERS) ../cliff-map/hashMap.hpp ../include/define.hpp 
 	mkdir -p ../bin
 	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(ARCHFLAG) $(INCLUDES) $(LIBS) $< -o $@
 
