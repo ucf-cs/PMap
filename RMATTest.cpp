@@ -7,7 +7,8 @@ void threadRunner(std::thread *threads, void function(std::string filename))
     // Start our threads.
     for (size_t i = 0; i < RMAT_COUNT; i++)
     {
-        std::string str = "./data/rmat/edge_list_rmat_s10_" + std::to_string(i) + "_of_" + std::to_string(RMAT_COUNT);
+        std::string str = "./data/rmat/edge_list_rmat_s10_" + std::to_string(i) + "_of_4";
+        //std::string str = "./data/rmat/smallTest";
         threads[i] = std::thread(function, str);
     }
 
@@ -40,7 +41,7 @@ void reportDegree()
     {
         if (hashMap->containsKey(i << 3))
         {
-            std::cout << "Node " << i << ":\t" << (hashMap->get(i) >> 3) << std::endl;
+            std::cout << "Node  " << i << ":\t" << (hashMap->get(i<<3) >> 3) << std::endl;
         }
     }
 }
@@ -53,8 +54,8 @@ void parseFile(std::string filename)
         throw std::runtime_error("Could not open file.");
     }
     std::string line;
-    Key k;
-    Value v;
+    Key outgoing;
+    Key incoming;
     size_t val;
     while (std::getline(rmat, line))
     {
@@ -65,10 +66,10 @@ void parseFile(std::string filename)
             switch (colIdx)
             {
             case 0:
-                k = val;
+                outgoing = val;
                 break;
             case 1:
-                v = val;
+                incoming = val;
                 break;
             default:
                 throw std::runtime_error("Too many values found on this line.");
@@ -78,7 +79,7 @@ void parseFile(std::string filename)
                 ss.ignore();
             colIdx++;
         }
-        hashMap->update(k, v, ConcurrentHashMap<Key, Value, xxhash<Key>>::Table::increment);
+        hashMap->update(incoming << 3, ((((size_t)1 << 61) - 3) << 3), ConcurrentHashMap<Key, Value, xxhash<Key>>::Table::increment);
     }
 }
 
@@ -107,7 +108,7 @@ int main(void)
     std::thread threads[RMAT_COUNT];
 
     // Create the hash map.
-    hashMap = new ConcurrentHashMap<Key, Value, xxhash<Key>>();
+    hashMap = new ConcurrentHashMap<Key, Value, xxhash<Key>>(NODE_COUNT);
 
     // Get start time.
     auto start = std::chrono::high_resolution_clock::now();

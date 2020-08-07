@@ -552,7 +552,7 @@ public:
             }
             // Our actual new value here is dependent on the old value.
             // NOTE: The correct way to perform this addition is entirely dependent on the type of Value.
-            newValue = ((oldValue >> 3) + (newValue >> 3)) << 3;
+            newValue = ((oldValue >> 3) + 1) << 3;
             SFENCE;
             // Must be CAS rather than FAA because the old value might be a sentinel.
             table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
@@ -588,7 +588,7 @@ public:
             size_t length = sizeof(Table) + (sizeof(KVpair) * size);
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if ((uintptr_t)address == -1)
+            if ((intptr_t)address == -1)
             {
                 // error
                 fprintf(stderr, "Failed to mmap the existing file. errno %d: %s\n", errno, strerror(errno));
@@ -1010,7 +1010,7 @@ public:
             Key key = topTable->key(i);
             Value value = topTable->value(i);
             // TODO: Try to make this pretty-printing of sentinels actually work.
-            //std::cout << ((Key)key == MATCH_ANY ? "MATCH_ANY" : ((Key)key == NO_MATCH_OLD ? "NO_MATCH_OLD" : ((Key)key == KTOMBSTONE ? "TOMBSTONE" : key))) << "\t" << ((Value)value == MATCH_ANY ? "MATCH_ANY" : ((Value)value == NO_MATCH_OLD ? "NO_MATCH_OLD" : ((Value)value == VTOMBSTONE ? "TOMBSTONE" : ((Value)value == TOMBPRIME ? "TOMBPRIME" : value)))) << "\n";
+            std::cout << "key: " << key << "value: " << value << "\n";
         }
         std::cout << std::endl;
     }

@@ -19,7 +19,8 @@
 #include "hash.hpp"
 #include "./cliff-map/hashMap.hpp"
 
-inline const size_t NODE_COUNT = 1000;
+// The cardinality of the graph.
+inline const size_t NODE_COUNT = 2048;
 inline const size_t RMAT_COUNT = 4;
 
 typedef std::chrono::nanoseconds TIME_UNIT;
