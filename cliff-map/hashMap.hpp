@@ -112,6 +112,10 @@ public:
         // The hash map control structure.
         class CHM
         {
+            // The number of active resizers.
+            // We cap this to prevent too many threads from all allocating replacement tables at once.
+            std::atomic<size_t> resizersCount;
+
             size_t highestBit(size_t val)
             {
                 // Subtract 1 so the rightmost position is 0 instead of 1.
@@ -271,6 +275,12 @@ public:
             {
                 this->size.store(existingSize);
                 slots.store(tableCapacity);
+#ifdef RESIZE
+                resizersCount.store(0);
+                newTable.store(nullptr);
+                copyIdx.store(0);
+                copyDone.store(0);
+#endif
             }
 
             // Heuristic to estimate if the table is overfull.
@@ -536,7 +546,7 @@ public:
         {
             assert(idx < table->len);
             Key oldValueRef = oldValue;
-            if (oldValue == VTOMBSTONE)
+            if (oldValue == VINITIAL || oldValue == VTOMBSTONE)
             {
                 oldValue = 0;
             }
@@ -742,7 +752,10 @@ public:
             {
                 return VINITIAL;
             }
-
+#ifdef RESIZE
+            // Check for the existance of a new table.
+            Table *newTable = table->chm.newTable.load();
+#endif
             // Compare the key we found.
             // We do this because multiple keys can hash to the same index.
             if (keyEq(K, key))
@@ -770,8 +783,12 @@ public:
                 // Or if we found a tombstone key, indicating there are no more keys in this table.
                 K == KTOMBSTONE)
             {
+#ifdef RESIZE
+                return (newTable == nullptr) ? VINITIAL : getImpl(helpCopy(newTable), key, fullHash);
+#else
                 // Value is not present.
                 return VINITIAL;
+#endif
             }
 
             // Probe to the next index.
@@ -838,6 +855,10 @@ public:
             }
             // The slot is not empty.
 
+#ifdef RESIZE
+            newTable = table->chm.newTable.load();
+#endif
+
             // See if we found a match.
             if (keyEq(K, key))
             {
@@ -849,8 +870,22 @@ public:
                 // Or if we run out of space.
                 K == KTOMBSTONE)
             {
+#ifdef RESIZE
+                // Resize the table.
+                newTable = table->chm.resize(this, table);
+                // Help copy over an existing value.
+                // If we are attempting to replace the value without concern for the old value, we don't have to bother with this.
+                // In practice, we only ignore this within an existing migration.
+                if (oldVal != VINITIAL)
+                {
+                    helpCopy(newTable);
+                }
+                // Try again in the new table.
+                return putIfMatch(newTable, key, newVal, oldVal);
+#else
                 // The key is not present.
                 return VINITIAL;
+#endif
             }
             // Reprobe.
             idx = (idx + 1) & (len - 1);
