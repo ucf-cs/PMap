@@ -53,18 +53,26 @@
 // CLWB intrinsic?
 #include <immintrin.h>
 
-// TODO: Debug resizing.
-//#define RESIZE
-
 // Pointer marking.
 // Offset can be set from 0-2 to mark different bits.
 #define SET_MARK(_p, offset) (void *)((uintptr_t)_p | (uintptr_t)(1 << offset))
 #define CLR_MARK(_p, offset) (void *)((uintptr_t)_p & (uintptr_t) ~(1 << offset))
 #define IS_MARKED(_p, offset) (void *)((uintptr_t)_p & (uintptr_t)(1 << offset))
 
+// These are used to enable and disable different variants of our design.
+// TODO: Debug resizing.
+//#define RESIZE
+#define NVM
+
+#ifdef  NVM
 #define SFENCE __builtin_ia32_sfence()
 // TODO: Requires machine support. Can try Intel intrinsic or raw assembly.
 #define CLWB(p) //__asm__ __volatile__("clwb (%0)\n\t" : : "r"(p)) //_mm_clwb(p)
+#else
+// Noop these instructions.
+#define SFENCE
+#define CLWB(p)
+#endif
 
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 inline const size_t REPROBE_LIMIT = 10;
