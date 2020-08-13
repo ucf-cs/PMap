@@ -570,16 +570,14 @@ public:
     };
 
     // Constructor.
-    ConcurrentHashMap(size_t size = Table::MIN_SIZE)
+    ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE)
     {
         // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
-        char fileName[] = "./table.bin";
         // This will hold the file descriptor of our memory mapped file.
-        int fd = -1;
         // This will hold the memory address of our memory mapped table.
         void *address;
         // Try to open an existing hash table.
-        fd = open(fileName, O_RDWR);
+        int fd = open(fileName, O_RDWR);
         //fprintf(stderr, "errno %d: %s\n", errno, strerror(errno));
         // If we succeeded, just map the existing data.
         if (fd != -1)
@@ -599,7 +597,9 @@ public:
             if ((intptr_t)address == -1)
             {
                 // error
-                fprintf(stderr, "Failed to mmap the existing file. errno %d: %s\n", errno, strerror(errno));
+                std::cerr << "Failed to mmap the existing file. errno = " << errno << ", " << strerror(errno)
+                          << std::endl;
+                throw std::logic_error("mmap existing file failed.");
             }
             // Assign the KV pairs.
             ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
@@ -630,7 +630,8 @@ public:
             if (fd == -1)
             {
                 // error
-                fprintf(stderr, "Failed to create or open the file.\n");
+                std::cerr << "Failed to create or open the file." << std::endl;
+                throw std::runtime_error("cannot create or open file");
             }
             // Allocate enough space for the table and the KV pairs.
             size_t length = sizeof(Table) + (sizeof(KVpair) * size);
@@ -638,7 +639,8 @@ public:
             if (ftruncate(fd, length) == -1)
             {
                 // error
-                fprintf(stderr, "Failed to adjust file size.\n");
+                std::cerr << "Failed to adjust file size." << std::endl;
+                throw std::runtime_error("cannot create or open file");
             }
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
@@ -652,6 +654,12 @@ public:
         table.store((Table *)address);
         return;
     }
+
+    ConcurrentHashMap(size_t sz = Table::MIN_SIZE)
+        : ConcurrentHashMap("./hashmap.dat", sz)
+    {
+    }
+
     ~ConcurrentHashMap()
     {
         size_t size = table.load()->chm.size.load();
