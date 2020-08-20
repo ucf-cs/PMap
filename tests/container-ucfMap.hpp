@@ -1,5 +1,5 @@
 #ifndef _TESTUCFMAP
-#define _TESTUCFMAP 1
+#define _TESTUCFMAP
 
 #include "../cliff-map/hashMap.hpp"
 
@@ -27,6 +27,18 @@ namespace ucf
     // std::cout << "e " << (el << 3) << std::endl;
 
     return c.remove(el << 3);
+  }
+
+  bool contains(container_type &c, KeyT el)
+  {
+    //~ std::cerr << 'e' << el << ' ' << th << std::endl;
+
+    return c.containsKey(el);
+  }
+
+  ValT get(container_type &c, KeyT el)
+  {
+    return c.get(el);
   }
 
   size_t count(container_type &c)

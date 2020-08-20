@@ -8,7 +8,7 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/../bin/test-unique-elems.bin",
+            "program": "${workspaceFolder}/../bin/test.bin",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",

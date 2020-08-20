@@ -6,9 +6,6 @@
 //inline const size_t NODE_COUNT = 2048;
 //inline const size_t RMAT_COUNT = 4;
 
-#ifndef TEST_UNIQUE_ELEMS
-#define TEST_UNIQUE_ELEMS
-
 #include "test-framework.hpp"
 
 class RMAT : public TestFramework
@@ -19,19 +16,25 @@ public:
   }
 
 private:
-// TODO: Adapt this.
-static void reportDegree(ThreadInfo &ti)
-{
-    for (size_t i = 0; i < NODE_COUNT; i++)
+  // TODO: Adapt this.
+  static void reportDegree(ThreadInfo &ti)
+  {
+    size_t elemCount = count(*ti.container);
+    for (size_t i = 0; i < elemCount; i++)
     {
-        if (hashMap->containsKey(i << 3))
-        {
-            std::cout << "Node  " << i << ":\t" << (hashMap->get(i<<3) >> 3) << std::endl;
-        }
+      if (contains(*ti.container, i << 3))
+      {
+        std::cout << "Node  " << i << ":\t" << (get(*ti.container, i << 3) >> 3) << std::endl;
+      }
     }
-}
+  }
   inline static void parseFile(ThreadInfo &ti, std::string filename)
   {
+    // Extra threads do nothing since we have only 4 files.
+    if (ti.num >= 4)
+    {
+      return;
+    }
     std::ifstream rmat(filename);
     if (!rmat.is_open())
     {
@@ -66,12 +69,12 @@ static void reportDegree(ThreadInfo &ti)
       increment(*ti.container, incoming << 3);
     }
   }
-  static void container_test_prefix(ThreadInfo &ti)
+  void container_test_prefix(ThreadInfo &ti)
   {
     return;
   }
 
-  static void container_test(ThreadInfo &ti)
+  void container_test(ThreadInfo &ti)
   {
     const size_t tinum = ti.num;
     const size_t maxops = opsPerThread(ti.num_threads, ti.pnoiter, 0);
@@ -83,7 +86,7 @@ static void reportDegree(ThreadInfo &ti)
     try
     {
       const size_t tinum = ti.num;
-      std::string str = "./data/rmat/edge_list_rmat_s10_" + std::to_string(tinum) + "_of_4";
+      std::string str = "/home/marioman/PMap/data/rmat/edge_list_rmat_s10_" + std::to_string(tinum) + "_of_4";
       //std::string str = "./data/rmat/smallTest";
       parseFile(ti, str);
 
@@ -97,7 +100,7 @@ static void reportDegree(ThreadInfo &ti)
       std::cerr << "err: " << errc << std::endl;
     }
   }
-  static void ptest(ThreadInfo &ti, time_point &starttime)
+  void ptest(ThreadInfo &ti, time_point &starttime)
   {
     container_test_prefix(ti);
     sync_start();
@@ -108,7 +111,5 @@ static void reportDegree(ThreadInfo &ti)
     container_test(ti);
   }
 };
-
-#endif
 
 #endif

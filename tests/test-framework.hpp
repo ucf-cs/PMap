@@ -28,8 +28,9 @@ static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
 #define TEST_CONFLICTS 0
 #endif
 
-// NOTE: Change this and the include to change the data structure.
-#define DATA_STRUCTURE UniqueElems
+// NOTE: Change this and the include to change the test.
+//#define TEST UniqueElems
+#define TEST RMAT
 
 struct TestOptions
 {
@@ -309,6 +310,7 @@ public:
             total_fail += info.fail;
         }
 
+        // TODO: Adjust this for showing the results for arbitrary tests.
         const int expctsize = expectedSize(opt.numthreads, opt.numops);
 
         if (expctsize != actsize)

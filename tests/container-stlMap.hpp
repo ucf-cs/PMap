@@ -38,6 +38,27 @@ namespace stl
     return c.erase(el) == 1;
   }
 
+  bool contains(container_type &c, KeyT el)
+  {
+    //~ std::cerr << 'e' << el << ' ' << th << std::endl;
+
+    guard_type g(global_lock);
+
+    return c.count(el) > 0;
+  }
+
+  ValT get(container_type &c, KeyT el)
+  {
+    try
+    {
+      return c.at(el);
+    }
+    catch (const std::out_of_range &oor)
+    {
+      return (ValT)NULL;
+    }
+  }
+
   size_t count(const container_type &c)
   {
     return c.size();
