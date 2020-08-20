@@ -1,9 +1,11 @@
-#include "test-unique-elems.hpp"
+// NOTE: Change this and the #define DATA_STRUCTURE to change the data structure.
+//#include "test-unique-elems.hpp"
+#include "test-rmat.hpp"
 
 int main(int argc, char **args)
 {
-    UniqueElems test;
-    //RMAT test;
+    DATA_STRUCTURE test;
+    RMAT test;
     
     std::vector<std::string> arguments(args, args + argc);
     size_t argn = 1;
@@ -13,7 +15,7 @@ int main(int argc, char **args)
 
     while (matched && (argn < arguments.size()))
     {
-        matched = (test.matchOpt1(arguments, argn, "-n", settings.numops) || test.matchOpt1(arguments, argn, "-f", settings.filename) || test.matchOpt1(arguments, argn, "-t", settings.numthreads) || test.matchOpt1(arguments, argn, "-p", settings.numruns) || test.matchOpt1(arguments, argn, "-c", settings.capacity) || test.matchOpt0(arguments, argn, "-s", UniqueElems::setField<bool>, std::ref(settings.sequential), true) || test.matchOpt0(arguments, argn, "-d", UniqueElems::setField<bool>, std::ref(settings.printdata), true) || test.matchOpt0(arguments, argn, "-h", UniqueElems::help, arguments.at(0)));
+        matched = (test.matchOpt1(arguments, argn, "-n", settings.numops) || test.matchOpt1(arguments, argn, "-f", settings.filename) || test.matchOpt1(arguments, argn, "-t", settings.numthreads) || test.matchOpt1(arguments, argn, "-p", settings.numruns) || test.matchOpt1(arguments, argn, "-c", settings.capacity) || test.matchOpt0(arguments, argn, "-s", DATA_STRUCTURE::setField<bool>, std::ref(settings.sequential), true) || test.matchOpt0(arguments, argn, "-d", DATA_STRUCTURE::setField<bool>, std::ref(settings.printdata), true) || test.matchOpt0(arguments, argn, "-h", DATA_STRUCTURE::help, arguments.at(0)));
     }
 
     if (argn != arguments.size())

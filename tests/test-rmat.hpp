@@ -1,4 +1,3 @@
-/*
 #ifndef __RMATTEST__
 #define __RMATTEST__
 
@@ -113,4 +112,3 @@ static void reportDegree(ThreadInfo &ti)
 #endif
 
 #endif
-*/
