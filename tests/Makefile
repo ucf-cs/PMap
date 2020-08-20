@@ -19,8 +19,8 @@ VALGRIND ?= /home/marioman/local/bin/valgrind --tool=pmemcheck
 VGFLAGS  ?= --flush-check=yes --flush-align=yes --mult-stores=yes
 CHKARGS  ?= -n 1000000 -c 20 -f $(DATAFILE) -t 48 
 
-INCLUDES := -I../include -I../cliff-map -I/home/marioman/onefile -I/home/marioman/local/include
-LIBS     := -L/home/marioman/local/lib #-lpmemobj
+INCLUDES := -I../include -I../cliff-map -I/home/marioman/onefile -I/home/marioman/usr/include #-I/home/marioman/local/include
+LIBS     := -L/home/marioman/local/lib -lpmemobj -L/home/marioman/usr/lib #-L/usr/lib/x86_64-linux-gnu
 TARGET   := ../bin/test-unique-elems.bin
 HEADERS  := container-onefileMap.hpp container-pmemMap.hpp container-ucfMap.hpp container-stlMap.hpp
 

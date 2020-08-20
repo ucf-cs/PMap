@@ -1,23 +1,25 @@
 #ifndef TEST_FRAMEWORK
 #define TEST_FRAMEWORK
 
-#include <thread>
-#include <iostream>
-#include <sstream>
-#include <list>
-#include <iomanip>
-#include <cstdio>
-#include <memory>
-#include <cassert>
-#include <atomic>
-#include <vector>
 #include <algorithm>
-#include <new>
-#include <string>
+#include <atomic>
+#include <cassert>
+#include <cstdio>
 #include <fstream>
+#include <functional>
+#include <iomanip>
+#include <iostream>
+#include <list>
+#include <memory>
+#include <new>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <vector>
 
 #ifndef DEFAULT_CACHELINE_SIZE
-static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
+static constexpr size_t CACHELINESZ = 64;
+//static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
 #else
 static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
 #endif
@@ -42,8 +44,8 @@ using ValT = size_t;
 
 #include "container-ucfMap.hpp"
 #include "container-stlMap.hpp"
-#include "container-pmemMap.hpp"
-#include "container-onefileMap.hpp"
+//#include "container-pmemMap.hpp"
+//#include "container-onefileMap.hpp"
 
 //
 // define container and operations
@@ -192,18 +194,21 @@ protected:
 
 #endif
 
-    static void container_test_prefix(ThreadInfo &ti)
+    virtual void container_test_prefix(ThreadInfo &ti)
     {
+        throw std::runtime_error("Called parent function instead of child instance.");
         return;
     }
 
-    static void container_test(ThreadInfo &ti)
+    virtual void container_test(ThreadInfo &ti)
     {
+        throw std::runtime_error("Called parent function instead of child instance.");
         return;
     }
 
-    static void ptest(ThreadInfo &ti, time_point &starttime)
+    virtual void ptest(ThreadInfo &ti, time_point &starttime)
     {
+        throw std::runtime_error("Called parent function instead of child instance.");
         return;
     }
 
@@ -260,14 +265,14 @@ public:
             ThreadInfo &ti = thread_info.at(i);
 
             ti = ThreadInfo(contptr, i, opt.numops, opt.numthreads);
-            exp_threads.emplace_back(&TestFramework::ptest, std::ref(ti), std::ref(starttime));
+            exp_threads.emplace_back(&TestFramework::ptest, this, std::ref(ti), std::ref(starttime));
         }
 
         // use main thread as worker
         ThreadInfo &thisTi = thread_info.front();
 
         thisTi = ThreadInfo(contptr, 0, opt.numops, opt.numthreads);
-        ptest(thisTi, starttime);
+        this->ptest(thisTi, starttime);
 
         // join
         for (std::thread &thr : exp_threads)

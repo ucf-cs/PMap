@@ -11,7 +11,7 @@ public:
   }
 
 private:
-  static void container_test_prefix(ThreadInfo &ti)
+  void container_test_prefix(ThreadInfo &ti)
   {
     const size_t tinum = ti.num;
     const size_t maxops = opsPerThread(ti.num_threads, ti.pnoiter, 0);
@@ -41,7 +41,7 @@ private:
     }
   }
 
-  static void container_test(ThreadInfo &ti)
+  void container_test(ThreadInfo &ti)
   {
     const size_t tinum = ti.num;
     const size_t maxops = opsPerThread(ti.num_threads, ti.pnoiter, 0);
@@ -92,7 +92,7 @@ private:
       std::cerr << "err: " << errc << std::endl;
     }
   }
-  static void ptest(ThreadInfo &ti, time_point &starttime)
+  void ptest(ThreadInfo &ti, time_point &starttime)
   {
     container_test_prefix(ti);
     sync_start();
