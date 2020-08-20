@@ -56,9 +56,26 @@ namespace pm
     return c.pop.root()->pptr->erase(val);
   }
 
+  bool contains(container_type &c, KeyT el)
+  {
+    pm::root::map_type::accessor result;
+    return c.pop.root()->pptr->find(result, el);
+  }
+
+  ValT get(container_type &c, KeyT el)
+  {
+    return contains(c, el);
+  }
+
   size_t count(container_type &c)
   {
     return c.pop.root()->pptr->size();
+  }
+
+  ValT increment(container_type &c, KeyT el)
+  {
+    // NOTE: Cannot actually increment.
+    return insert(c, el);
   }
 
   container_type &

@@ -34,9 +34,27 @@ namespace onefile
     return c.remove(val);
   }
 
+  bool contains(container_type &c, KeyT el)
+  {
+    return c.contains(el);
+  }
+
+  ValT get(container_type &c, KeyT el)
+  {
+    ValT v;
+    c.innerGet(el, v, true);
+    return v;
+  }
+
   size_t count(const container_type &c)
   {
     return c.size();
+  }
+
+  ValT increment(container_type &c, KeyT el)
+  {
+    // NOTE: Cannot actually increment.
+    return c.add(el);
   }
 
   container_type &
