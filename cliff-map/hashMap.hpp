@@ -38,7 +38,9 @@
 #include <utility>
 
 // Fast hashing library.
-#include "xxhash.hpp"
+#include "../include/xxhash.hpp"
+
+#include "../include/define.hpp"
 
 // mmap.
 #include <sys/mman.h>
