@@ -1,25 +1,91 @@
 #ifndef DEFINE_HPP
 #define DEFINE_HPP
 
-inline const size_t NUM_OPS = 10000;
-inline const size_t THREAD_COUNT = 8;
+#include <cstddef>
+#include <iostream>
+#include <string>
+#include <typeinfo>
 
-// Adjust this to artificially increase or decrease contention.
-inline const size_t PTR_POOL_SIZE = THREAD_COUNT * NUM_OPS;
+// Globally defined constants, functions, etc.
 
-// Pointer marking.
-// Offset can be set from 0-2 to mark different bits.
-inline void *setMark(uintptr_t p, size_t offset)
+using time_point = std::chrono::time_point<std::chrono::system_clock>;
+using duration_unit = std::chrono::milliseconds;
+
+// The key and value datatypes.
+// NOTE: Certain tests are only compatible with certain types.
+// NOTE: Type must reserve the 3 least significant bits.
+// NOTE: Type must reserve some values as sentinels.
+// NOTE: Type must be 64 bits (perhaps fewer).
+using KeyT = size_t;
+using ValT = size_t;
+
+#ifndef DEFAULT_CACHELINE_SIZE
+static constexpr size_t CACHELINESZ = 64;
+//static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
+#else
+static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
+#endif
+
+// Test options can be overridden by command line.
+// The test itself has final say in which parameters are used.
+struct TestOptions
 {
-    return (void *)(p | (uintptr_t)(1 << offset));
-}
-inline void *clearMark(uintptr_t p, size_t offset)
+    // Number of threads to spawn and use.
+    size_t numthreads;
+    // Number of operations to run, shared accross all threads.
+    size_t numops;
+    // Number of times to repeast the test.
+    size_t numruns;
+    // Starting (or total) capacity of the container.
+    size_t capacity; // Actual capacity is 2 ^ capacity.
+    // Location and name of the persistent file used.
+    std::string filename;
+    // Whether or not to wipe the file before each run.
+    bool wipeFile;
+
+    TestOptions();
+
+    // TODO: Print out final arguments used.
+    void print()
+    {
+        std::cout << "*** concurrent container test "
+                  << "\n***          number of threads: " << numthreads
+                  << "\n*** total number of operations: " << numops
+                  << "\n***       total number of runs: " << numruns
+                  << "\n***      initial capacity (base 2): " << capacity
+                  << "\n***                actual capacity: " << (1 << capacity)
+                  << "\n***                mapped file: " << filename
+                  << "\n***                  wipe file: " << wipeFile
+                  //<< "\n***             test type: " << typeid(test_type).name()
+                  //<< "\n***             container type: " << typeid(container_type).name()
+                  << std::endl;
+        return;
+    }
+};
+
+struct alignas(CACHELINESZ) ThreadInfo
 {
-    return (void *)(p & (uintptr_t) ~(1 << offset));
-}
-inline void *isMarked(uintptr_t p, size_t offset)
-{
-    return (void *)(p & (uintptr_t)(1 << offset));
-}
+    // container_type*
+    void *container;
+
+    size_t num;
+    size_t fail;
+    size_t succ;
+    size_t pnoiter;
+    size_t num_threads;
+    size_t num_held_back;
+
+    ThreadInfo(void *r, size_t n, size_t cntiter, size_t cntthreads)
+        : container(r), num(n), fail(0), succ(0), pnoiter(cntiter), num_threads(cntthreads),
+          num_held_back(0)
+    {
+        assert(num < num_threads);
+    }
+
+    ThreadInfo()
+        : ThreadInfo(nullptr, 0, 0, 1)
+    {
+    }
+};
 
 #endif

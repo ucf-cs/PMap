@@ -1,4 +1,6 @@
 // A collection of STL-compliant hash functions.
+#ifndef HASH_HPP
+#define HASH_HPP
 
 #include "xxhash.hpp"
 
@@ -29,3 +31,4 @@ public:
 // The STL hash is already STL-compliant, so there's no need to make a wrapper for this.
 // STL Hash.
 //std::hash<Key>{}(key);
+#endif

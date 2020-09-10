@@ -3,7 +3,7 @@
 
 // TODO: Uses persistence from PMwCAS, modified to support non-persitent data structures: https://github.com/Microsoft/pmwcas
 // Potentially enhanced using ideas from Reuse, Don't Recycle: https://drops.dagstuhl.de/opus/volltexte/2017/8009/pdf/LIPIcs-DISC-2017-4.pdf
-// NOTE: Must run ./configure in the glog folder to build successfully.
+// NOTE: Must run ./configure in the glog folder to build theirs successfully.
 // NOTE: Reserves 3 bits to use PMwCAS. Leaves no spare bits.
 // Easy persistence can be done based on this: https://dl.acm.org/doi/abs/10.1145/2935764.2935810 and this: http://concurrencyfreaks.blogspot.com/2018/01/a-lock-free-persistent-queue.html
 
@@ -26,8 +26,8 @@
 // Desired: Support for fetch_add() and other atomics, not just CAS.
 // Desired: Optimizations around power law distribution of key access. (Some keys accessed incredibly frequently, most others almost never)
 
-#ifndef __HASHMAP_H__
-#define __HASHMAP_H__
+#ifndef HASH_MAP_HPP
+#define HASH_MAP_HPP
 
 #include <assert.h>
 
@@ -38,9 +38,9 @@
 #include <utility>
 
 // Fast hashing library.
-#include "../include/xxhash.hpp"
+#include "xxhash.hpp"
 
-#include "../include/define.hpp"
+#include "define.hpp"
 
 // mmap.
 #include <sys/mman.h>
@@ -57,16 +57,25 @@
 
 // Pointer marking.
 // Offset can be set from 0-2 to mark different bits.
-#define SET_MARK(_p, offset) (void *)((uintptr_t)_p | (uintptr_t)(1 << offset))
-#define CLR_MARK(_p, offset) (void *)((uintptr_t)_p & (uintptr_t) ~(1 << offset))
-#define IS_MARKED(_p, offset) (void *)((uintptr_t)_p & (uintptr_t)(1 << offset))
+inline void *setMark(uintptr_t p, size_t offset)
+{
+    return (void *)(p | (uintptr_t)(1 << offset));
+}
+inline void *clearMark(uintptr_t p, size_t offset)
+{
+    return (void *)(p & (uintptr_t) ~(1 << offset));
+}
+inline void *isMarked(uintptr_t p, size_t offset)
+{
+    return (void *)(p & (uintptr_t)(1 << offset));
+}
 
 // These are used to enable and disable different variants of our design.
 // TODO: Debug resizing.
 //#define RESIZE
 #define NVM
 
-#ifdef  NVM
+#ifdef NVM
 #define SFENCE __builtin_ia32_sfence()
 // TODO: Requires machine support. Can try Intel intrinsic or raw assembly.
 #define CLWB(p) //__asm__ __volatile__("clwb (%0)\n\t" : : "r"(p)) //_mm_clwb(p)
@@ -728,7 +737,7 @@ public:
         assert(newVal != VINITIAL);
         assert(oldVal != VINITIAL);
         Value retVal = putIfMatch(table.load(), key, newVal, oldVal, CAS);
-        assert(!IS_MARKED(retVal, 0));
+        assert(!isMarked(retVal, 0));
         return retVal == VTOMBSTONE ? VINITIAL : retVal;
     }
 
@@ -828,15 +837,17 @@ public:
                      Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
         assert(newVal != VINITIAL);
-        assert(!IS_MARKED(newVal, 0));
-        assert(!IS_MARKED(oldVal, 0));
+        assert(!isMarked(newVal, 0));
+        assert(!isMarked(oldVal, 0));
         size_t len = table->len;
         size_t idx = Hash{}(key) & (len - 1);
 
         size_t reprobeCount = 0;
         Key K;
         Value V;
+#ifdef RESIZE
         Table *newTable = nullptr;
+#endif
         // Spin until we get a key slot.
         while (true)
         {
@@ -1018,6 +1029,12 @@ public:
     }
 #endif
 
+    // TODO: Implement this method.
+    void recover()
+    {
+        return;
+    }
+
     void print()
     {
         Table *topTable = table.load();
@@ -1054,7 +1071,7 @@ private:
 // template <typename Key, typename Value>
 // Value ConcurrentHashMap<Key, Value>::VTOMBSTONE = new size_t();
 // template <typename Key, typename Value>
-// Value ConcurrentHashMap<Key, Value>::TOMBPRIME = (size_t)SET_MARK(VTOMBSTONE, 0);
+// Value ConcurrentHashMap<Key, Value>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, 0);
 // template <typename Key, typename Value>
 // Value ConcurrentHashMap<Key, Value>::MATCH_ANY = new size_t();
 // template <typename Key, typename Value>
@@ -1070,7 +1087,7 @@ Value ConcurrentHashMap<Key, Value, Hash>::VINITIAL = ((((size_t)1 << 62) - 1) <
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::VTOMBSTONE = ((((size_t)1 << 62) - 2) << 3);
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = (size_t)SET_MARK(VTOMBSTONE, 0);
+Value ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, 0);
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::MATCH_ANY = ((((size_t)1 << 62) - 3) << 3);
 template <typename Key, typename Value, class Hash>

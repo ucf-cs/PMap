@@ -1,4 +1,6 @@
-#pragma once
+#ifndef XXHASH_HPP
+#define XXHASH_HPP
+
 #include <cstdint>
 #include <cstring>
 #include <array>
@@ -2255,3 +2257,5 @@ namespace xxh
 	using canonical64_t = canonical_t<64>;
 	using canonical128_t = canonical_t<128>;
 } // namespace xxh
+
+#endif
