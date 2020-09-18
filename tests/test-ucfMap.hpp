@@ -52,5 +52,11 @@ construct(const TestOptions& opt, container_type*)
   return *cont;
 }
 
+container_type&
+reconstruct(const TestOptions& opt, const container_type*)
+{
+  throw std::logic_error("recovery not implemented");
+}
+
 }
 #endif /* _TESTUCFMAP */

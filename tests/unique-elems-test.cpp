@@ -379,7 +379,7 @@ check_elements(const ThreadInfo& ti)
 void recovery_test(const TestOptions& opt)
 {
   container_type* const           tag = nullptr;
-	std::unique_ptr<container_type> cont{&construct(opt, tag)};
+	std::unique_ptr<container_type> cont{&reconstruct(opt, tag)};
 	int                             contsz = 0;
 	bool                            success = true;
 
