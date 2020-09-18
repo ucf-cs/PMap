@@ -40,6 +40,15 @@ bool erase(container_type& c, KeyT el)
   return c.erase(el) == 1;
 }
 
+
+bool contains(container_type& c, KeyT el)
+{
+  guard_type g(global_lock);
+
+  return c.find(el) != c.end();
+}
+
+
 size_t count(const container_type& c)
 {
   return c.size();

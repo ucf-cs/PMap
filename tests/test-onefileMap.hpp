@@ -27,12 +27,17 @@ struct container_type : TMHashMap<KeyT, ValT, PTM, TMTYPE>
 
 bool insert(container_type& c, ValT val)
 {
-  return c.add(val);;
+  return c.add(val);
 }
 
 bool erase(container_type& c, KeyT val)
 {
   return c.remove(val);
+}
+
+bool contains(container_type& c, KeyT val)
+{
+  return c.contains(val);
 }
 
 size_t count(const container_type& c)

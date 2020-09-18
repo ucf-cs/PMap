@@ -34,6 +34,11 @@ size_t count(container_type& c)
   return c.size();
 }
 
+bool contains(container_type& c, ValT el)
+{
+  return c.containsKey(el << 3);
+}
+
 container_type&
 construct(const TestOptions& opt, container_type*)
 {

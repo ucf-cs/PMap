@@ -63,6 +63,11 @@ size_t count(container_type& c)
   return c.pop.root()->pptr->size();
 }
 
+size_t contains(container_type& c, KeyT val)
+{
+  return c.pop.root()->pptr->count(val) > 0;
+}
+
 container_type&
 construct(const TestOptions& opt, const container_type*)
 {

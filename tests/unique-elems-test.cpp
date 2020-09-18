@@ -4,12 +4,17 @@
 #include <list>
 #include <iomanip>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <cassert>
 #include <atomic>
 #include <vector>
 #include <algorithm>
 #include <new>
+
+#include <sys/types.h>
+#include <unistd.h>
+#include <signal.h>
 
 #ifndef DEFAULT_CACHELINE_SIZE
 static constexpr size_t CACHELINESZ = std::hardware_destructive_interference_size;
@@ -21,16 +26,19 @@ static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
 #define TEST_CONFLICTS 0
 #endif
 
+static constexpr bool KILL_HARD = true;
 
 struct TestOptions
 {
-  size_t      numthreads = 8;
-  size_t      numops     = 40;
-  size_t      numruns    = 1;
-  size_t      capacity   = 16; // actual capacity is 2 ^ capacity
-  bool        sequential = false;
-  bool        printdata  = false;
-  std::string filename   = "./chashmap.dat";
+  size_t      numthreads     = 8;
+  size_t      numops         = 40;
+  size_t      numruns        = 1;
+  size_t      capacity       = 16; // actual capacity is 2 ^ capacity
+  bool        sequential     = false;
+  bool        printdata      = false;
+	int         fail_timer     = 0;
+	bool        test_recovery  = false;
+  std::string filename       = "./chashmap.dat";
 };
 
 using KeyT = size_t;
@@ -277,6 +285,133 @@ void ptest(ThreadInfo& ti, time_point& starttime)
   container_test(ti);
 }
 
+
+[[noreturn]]
+void simulate_catastrophic_failure()
+{
+  if (KILL_HARD) kill(getpid(), SIGKILL);
+
+	std::abort();
+}
+
+void timed_catastrophe(int delay)
+{
+  while (waiting_threads.load()) {}
+
+  std::this_thread::sleep_for(std::chrono::seconds(delay));
+
+  simulate_catastrophic_failure();
+}
+
+std::pair<int, bool> 
+check_elements(const ThreadInfo& ti)
+{
+  const size_t maxops   = opsPerThread(ti.num_threads, ti.pnoiter, 0);
+  const size_t numops   = opsPerThread(ti.num_threads, ti.pnoiter, ti.num);
+  const size_t nummain  = opsMainLoop(numops);
+	const size_t initwr   = numops - nummain;
+	size_t       rdid     = initwr / 2;
+
+	size_t       numvalid = 0;
+	bool         success  = true;
+	
+	// the first [0, rdid) elements must be in the data structure
+	{
+	  for (size_t opid = 0; opid < rdid; ++opid)
+  	{
+      const int val = genElem(opid, ti.num, ti.num_threads, maxops);
+
+		  if (contains(*ti.container, val))
+		    ++numvalid;
+		  else
+		    success = false;
+	  }
+	}
+	
+	// then find the first element that was not removed
+	{
+	  int val = genElem(rdid, ti.num, ti.num_threads, maxops);
+
+	  while (!contains(*ti.container, val))
+		{
+		  ++rdid;
+			val = genElem(rdid, ti.num, ti.num_threads, maxops);
+		}
+	}
+	
+	// the next X elements must be in the data structure
+	{
+	  size_t cntsequ = 0;
+		int    val = genElem(rdid, ti.num, ti.num_threads, maxops);
+
+		while (contains(*ti.container, val))
+		{
+		  ++cntsequ;
+			++rdid;
+			val = genElem(rdid, ti.num, ti.num_threads, maxops);
+		}
+
+		numvalid += cntsequ;
+
+    // \todo this is an estimate and the range coult be tightened, 
+		//       depending if initwr+1 is an insert or remove operation
+		if ((initwr > 0) && (cntsequ < initwr - 1)) success = false;
+		if (cntsequ > initwr + 1) success = false;
+	}
+	
+	// no subsequent element must be in the data structure
+	{
+    // \todo this is an estimate and the range coult be tightened, 
+		//       depending if initwr+1 is an insert or remove operation
+	  const size_t limit = initwr + (nummain / 2) - 1;
+
+	  for (size_t opid = rdid; opid < limit; ++opid)
+		{
+		  const int val = genElem(opid, ti.num, ti.num_threads, maxops);
+
+			if (contains(*ti.container, val)) success = false;
+		}
+	}
+
+  return std::make_pair(numvalid, success);
+}
+
+void recovery_test(const TestOptions& opt)
+{
+  container_type* const           tag = nullptr;
+	std::unique_ptr<container_type> cont{&construct(opt, tag)};
+	int                             contsz = 0;
+	bool                            success = true;
+
+  for (size_t i = 1; i < opt.numthreads; ++i)
+	{
+	  std::pair<int, bool> res = check_elements(ThreadInfo{cont.get(), i, opt.numops, opt.numthreads});
+
+		contsz += res.first;
+		if (!res.second) success = false;
+  }
+
+  const int actsize = count(*cont);
+
+  if (contsz != actsize)
+  {
+	  std::cerr << "Unexpected size: "
+		          << actsize << " <actual != found> " << contsz
+		          << std::endl;
+		fail();
+  }
+
+	if (!success)
+	{
+	  std::cerr << "Recovery inconsistency" 
+		          << std::endl;
+		fail();
+	}
+
+  std::cout << actsize << std::endl;
+	std::cout << "check OK." << std::endl;
+}
+
 size_t sequential_test(const TestOptions& opt)
 {
   container_type* const           tag  = nullptr;
@@ -316,7 +451,7 @@ int parallel_test(const TestOptions& opt)
   std::cout << std::endl;
 
   std::list<std::thread>          exp_threads;
-  std::vector<ThreadInfo>         thread_info(opt.numthreads, ThreadInfo{});
+  std::vector<ThreadInfo>         thread_info{opt.numthreads, ThreadInfo{}};
   container_type* const           tag  = nullptr;
   std::unique_ptr<container_type> cont{&construct(opt, tag)}; // for lifetime management
   container_type*                 contptr = cont.get();
@@ -333,6 +468,13 @@ int parallel_test(const TestOptions& opt)
     exp_threads.emplace_back(ptest, std::ref(ti), std::ref(starttime));
   }
 
+	if (opt.fail_timer)
+	{
+	  std::thread catastrophe(timed_catastrophe, opt.fail_timer);
+
+		catastrophe.detach();
+	}
+
   // use main thread as worker
   ThreadInfo& thisTi = thread_info.front();
 
@@ -345,7 +487,7 @@ int parallel_test(const TestOptions& opt)
   time_point     endtime = std::chrono::system_clock::now();
   int            elapsedtime = std::chrono::duration_cast<duration_unit>(endtime-starttime).count();
 
-  __sync_synchronize();
+  // __sync_synchronize();
   const int actsize = count(*cont); // std::distance(cont.qbegin(), cont.qend());
   std::cout << "elapsed time = " << elapsedtime << "ms" << std::endl;
   std::cout << "container size = " << actsize << std::endl;
@@ -513,20 +655,26 @@ void help(const std::string& executable)
   TestOptions tmp;
 
   std::cout << "A first test harness for associative containers: " << executable << std::endl
-            << "tests " << typeid(container_type).name() << std::endl
-	    << std::endl
-	    << "usage: " << executable << " [arguments]" << std::endl
-	    << std::endl
-	    << "arguments:" << std::endl
-	    << "-n num   number of total operations executed (default: " << tmp.numops << ")\n"
-	    << "-f name  name of the mmaped file (default: " << tmp.filename << ")\n"
-	    << "-t num   number of threads (default: " << tmp.numthreads << ")\n"
-	    << "-p num   number of parallel runs (default: " << tmp.numruns << ")\n"
-	    << "-c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
-	    << "-s       if specified, a sequential test is run before the parallel tests.\n"
-	    << "-d       if specified, the generated data test is printed and tested for uniqueness.\n"
-	    << "-h       displays this help message\n"
-	    << std::endl;
+            << "  tests " << typeid(container_type).name() << '\n'
+					  << "\nUsage: " << executable << " [arguments]\n" 
+					  << "\nArguments\n"
+						<< "Operation description:\n"
+					  << "  -n num   number of total operations executed (default: " << tmp.numops << ")\n"
+					  << "  -t num   number of threads (default: " << tmp.numthreads << ")\n"
+					  << "  -p num   number of parallel runs (default: " << tmp.numruns << ")\n"
+					  << "  -c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
+						<< "File Mapping:"
+					  << "  -f name  name of the mmaped file (default: " << tmp.filename << ")\n"
+						<< "Failure Testing:\n"
+						<< "  -F num   generates a catastrophic failure after num seconds to terminate the program.\n"
+						<< "           (default: " << tmp.fail_timer << ")\n"
+						<< "  -R       starts recovery mode from catastrophic failure.\n"
+						<< "Debugging"
+					  << "  -s       if specified, a sequential test is run before the parallel tests.\n"
+					  << "  -d       if specified, the generated data test is printed and tested for uniqueness.\n"
+						<< "General Information"
+					  << "  -h       displays this help message\n"
+					  << std::endl;
 
   exit(0);
 }
@@ -559,6 +707,8 @@ int main(int argc, char** args)
               || matchOpt0(arguments, argn, "-s", setField<bool>, std::ref(settings.sequential), true)
               || matchOpt0(arguments, argn, "-d", setField<bool>, std::ref(settings.printdata), true)
               || matchOpt0(arguments, argn, "-h", help, arguments.at(0))
+              || matchOpt1(arguments, argn, "-F", settings.fail_timer) 
+              || matchOpt0(arguments, argn, "-R", setField<bool>, std::ref(settings.test_recovery), true)
 							);
   }
 
@@ -579,6 +729,19 @@ int main(int argc, char** args)
 
   if (settings.printdata)
     prnGen(settings.numthreads, settings.numops);
+
+
+	if (settings.test_recovery)
+	{
+	  try
+		{
+		  recovery_test(settings);
+		}
+		catch (...)
+		{
+		  std::cout << "error in data recovery..." << std::endl;
+		}
+	}
 
   if (settings.sequential)
   {
