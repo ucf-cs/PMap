@@ -53,7 +53,7 @@ construct(const TestOptions& opt, container_type*)
 }
 
 container_type&
-reconstruct(const TestOptions& opt, const container_type*)
+reconstruct(const TestOptions&, const container_type*)
 {
   throw std::logic_error("recovery not implemented");
 }
