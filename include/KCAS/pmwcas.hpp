@@ -632,6 +632,13 @@ public:
                     // Persist it.
                     persist(KCASDescriptors[desc.tid].words[i].address, rval);
                 }
+                // If we clash with the KCAS descriptor we wanted to place anyway (via helping).
+                if (((DescRef)rval).tid == desc.tid &&
+                    ((DescRef)rval).seq == desc.seq)
+                {
+                    // Just move on to the next word.
+                    continue;
+                }
                 // We clashed with a PMwCAS. Help complete it.
                 PMwCAS((DescRef)rval, KCASDescriptors[desc.tid].words[i].address);
                 // Now that the obstruction is removed, try again.
