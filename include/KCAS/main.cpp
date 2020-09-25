@@ -5,8 +5,7 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
-// TODO: Add support for K > 8. Currently fails to link for some reason.
-inline const size_t K = 1;
+inline const size_t K = 64;
 
 PMwCASManager<uintptr_t, K, THREAD_COUNT> *pmwcas;
 

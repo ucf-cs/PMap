@@ -8,9 +8,9 @@
 #include <unordered_set>
 #include <thread>
 
-inline const size_t THREAD_COUNT = 2;
-inline const size_t ARRAY_SIZE = 1;
-inline const size_t NUM_OPS = 1000000;
+inline const size_t THREAD_COUNT = 8;
+inline const size_t ARRAY_SIZE = 1024;
+inline const size_t NUM_OPS = 10000;
 
 typedef std::chrono::nanoseconds TIME_UNIT;
 

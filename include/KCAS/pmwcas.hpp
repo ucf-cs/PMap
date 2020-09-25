@@ -8,21 +8,34 @@
 #include <chrono>
 #include <utility>
 
+#include <immintrin.h>
+
 #include "define.hpp"
 
-#define SFENCE __builtin_ia32_sfence()
-// TODO: Get this intrinsic, or some equivalent, working.
-// Requires a supported architecture.
-#define CLWB(p) //_mm_clwb(p) //pmem_clw
+// TODO: Consider relocating these. They define if and how flush and fence operates.
+#define DURABLE
+#define PWB_IS_CLFLUSH
+
+#if defined PWB_IS_CLFLUSH
+#define FLUSH(uptr) _mm_clflush((char *)uptr);
+#elif defined PWB_IS_CLFLUSHOPT
+#define FLUSH(uptr) pmem_clflushopt((char *)uptr);
+#elif defined PWB_IS_CLWB
+#define FLUSH(uptr) pmem_clwb((char *)uptr);
+#endif
+#define FENCE _mm_sfence();
 
 // T: The data type being dealt with. Ideally, it should just be something word-sized.
 // NOTE: T must not use the first 3 bits, and must not be larger than an atomic word.
+// NOTE: T must be able to cast to and from a 64-bit uintptr_t.
 // Ex. 61-bit int shifted left, pointers.
 // K: The maximum number of words that can be atomically modified by the KCAS.
 // P: The number of threads that can help perform operations.
 template <class T, size_t K, size_t P>
 class PMwCASManager
 {
+    static const uintptr_t FLUSH_ALIGN = 64;
+
 public:
     static const uintptr_t DirtyFlag = 1;
     static const uintptr_t PMwCASFlag = 2;
@@ -38,16 +51,94 @@ public:
     static const uintptr_t AddressMask = ~(DirtyFlag | PMwCASFlag | RDCSSFlag | MigrationFlag);
 
     // Forward declarations.
-    struct Descriptor;
     struct Word;
+    struct WordDescriptor;
+    struct KCASDescriptor;
+
+    // Base persistence functions.
+    // TODO: Consider relocating these base functions to another file.
+    static void PERSIST(const void *addr, size_t len)
+    {
+#ifdef DURABLE
+        uintptr_t uptr;
+        // Loop through cache-line-size (typically 64B) aligned chunks covering the given range.
+        for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
+             uptr < (uintptr_t)addr + len;
+             uptr += FLUSH_ALIGN)
+        {
+            FLUSH(uptr);
+        }
+        FENCE;
+#endif
+    }
+
+    static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
+    {
+#ifdef DURABLE
+        uintptr_t uptr;
+        // Loop through cache-line-size (typically 64B) aligned chunks covering the given range.
+        for (uptr = (uintptr_t)addr & ~(FLUSH_ALIGN - 1);
+             uptr < (uintptr_t)addr + len;
+             uptr += FLUSH_ALIGN)
+        {
+            FLUSH(uptr);
+        }
+#endif
+    }
+
+    static void PERSIST_BARRIER_ONLY()
+    {
+#ifdef DURABLE
+        FENCE;
+#endif
+    }
+
+    // Flush and fence the data stored in the address, then unflag the dirty bit atomically.
+    template <class U>
+    static U persist(std::atomic<U> *address, U value)
+    {
+        FLUSH(address);
+        FENCE;
+        address->compare_exchange_strong(value, (U)((uintptr_t)value & ~DirtyFlag));
+        return value;
+    }
+
+    // Always use this when reading fields with a dirty flag.
+    // This includes DescRef, T, WordDescriptor::Mutable, and KCASDescriptor::Mutable.
+    // NOTE: All of these data types should be dirty on initialization, just for safety.
+    template <class U>
+    static U pcas_read(std::atomic<U> *address)
+    {
+        U word = address->load();
+        if ((word & DirtyFlag) != 0)
+        {
+            persist(address, word);
+        }
+        return word & ~DirtyFlag;
+    }
+
+    // Always use this when CAS'ing fields with a dirty flag, unless you are marking the dirty flag by hand.
+    // This includes DescRef, T, WordDescriptor::Mutable, and KCASDescriptor::Mutable.
+    template <class U>
+    static bool pcas(std::atomic<U> *address, U &oldVal, U newVal)
+    {
+        U oldValCopy = oldVal;
+        // Ensure the field is persisted.
+        pcas_read<U>(address);
+        // Attempt to CAS.
+        bool ret = address->compare_exchange_strong(oldVal, newVal | DirtyFlag);
+        assert((ret && oldValCopy == oldVal) || (!ret && oldValCopy != oldVal));
+        return ret;
+    }
 
     // Descriptor status.
     enum Status
     {
-        // Avoid using the first 3 bits for our valid enum values.
-        Undecided = 8,
-        Succeeded = 16,
-        Failed = 32,
+        // NOTE: When using this atomically, avoid the first 3 bits, as they are reserved.
+        // This can be (and is) handled properly using bitfield logic.
+        Undecided = 0,
+        Succeeded = 1,
+        Failed = 2,
     };
     // Descriptor reference.
     // Used for descriptor reuse.
@@ -55,64 +146,56 @@ public:
     {
     private:
         static const size_t tidSize = (8 * sizeof(unsigned long) - __builtin_clzl(P) - 1) == 0 ? 1 : (8 * sizeof(unsigned long) - __builtin_clzl(P) - 1);
-        static const size_t fieldIDSize = (8 * sizeof(unsigned long) - __builtin_clzl(K) - 1) == 0 ? 1 : (8 * sizeof(unsigned long) - __builtin_clzl(K) - 1);
         static const size_t isRDCSSSize = 1;
-        static const size_t isPMwCASSize = 1;
+        static const size_t isKCASSize = 1;
         static const size_t isDirtySize = 1;
         // This will use whatever leftover bits remain while keeping the descriptor word-sized.
-        static const size_t seqSize = 64 - tidSize - fieldIDSize - isRDCSSSize - isPMwCASSize - isDirtySize;
+        static const size_t seqSize = 64 - tidSize - isRDCSSSize - isKCASSize - isDirtySize;
 
     public:
         // Reserved bits.
         bool isDirty : isDirtySize;
-        bool isPMwCAS : isPMwCASSize;
+        bool isKCAS : isKCASSize;
         bool isRDCSS : isRDCSSSize;
         // A sequence number to avoid the ABA problem.
         unsigned long seq : seqSize;
-        // The word modified by the index.
-        // Only used by RDCSS (word) descriptors.
-        unsigned short fieldID : fieldIDSize;
         // Thread ID.
         // Uses enough bits to address up to P threads.
         unsigned short tid : tidSize;
 
         // Base constructor.
-        DescRef()
+        DescRef() noexcept : isDirty(false), isKCAS(false), isRDCSS(false), seq(0), tid(0)
         {
             assert(sizeof(DescRef) == 8);
-            tid = 0;
-            fieldID = 0;
-            seq = 0;
-            isRDCSS = false;
-            isPMwCAS = false;
-            isDirty = false;
         }
         // Conversion contructor.
         // Defines conversion from T to DescRef.
+        // That way, we can read the fields contained within.
         DescRef(T ptr)
         {
             assert(sizeof(T) == sizeof(DescRef));
-            assert((tidSize + fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize) == 64);
+            assert((tidSize + seqSize + isRDCSSSize + isKCASSize + isDirtySize) == 64);
 
-            tid = ((size_t)ptr >> (fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << tidSize) - 1);
-            fieldID = ((size_t)ptr >> (seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << fieldIDSize) - 1);
-            seq = ((size_t)ptr >> (isRDCSSSize + isPMwCASSize + isDirtySize)) & (((size_t)1 << seqSize) - 1);
-            isRDCSS = ((size_t)ptr >> (isPMwCASSize + isDirtySize)) & (((size_t)1 << isRDCSSSize) - 1);
-            isPMwCAS = ((size_t)ptr >> isDirtySize) & (((size_t)1 << isPMwCASSize) - 1);
+            tid = ((size_t)ptr >> (seqSize + isRDCSSSize + isKCASSize + isDirtySize)) & (((size_t)1 << tidSize) - 1);
+            seq = ((size_t)ptr >> (isRDCSSSize + isKCASSize + isDirtySize)) & (((size_t)1 << seqSize) - 1);
+            isRDCSS = ((size_t)ptr >> (isKCASSize + isDirtySize)) & (((size_t)1 << isRDCSSSize) - 1);
+            isKCAS = ((size_t)ptr >> isDirtySize) & (((size_t)1 << isKCASSize) - 1);
             isDirty = ((size_t)ptr >> 0) & (((size_t)1 << isDirtySize) - 1);
         }
         // Conversion function.
         // Defines conversion from DescRef to T.
+        // Used for placing a DescRef directly in the data structure.
         operator T() const
         {
-            return (T)(((uintptr_t)tid << (fieldIDSize + seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) +
-                       ((uintptr_t)fieldID << (seqSize + isRDCSSSize + isPMwCASSize + isDirtySize)) +
-                       ((uintptr_t)seq << (isRDCSSSize + isPMwCASSize + isDirtySize)) +
-                       ((uintptr_t)isRDCSS << (isPMwCASSize + isDirtySize)) +
-                       ((uintptr_t)isPMwCAS << (isDirtySize)) +
+            assert(sizeof(T) == sizeof(DescRef));
+            return (T)(((uintptr_t)tid << (seqSize + isRDCSSSize + isKCASSize + isDirtySize)) +
+                       ((uintptr_t)seq << (isRDCSSSize + isKCASSize + isDirtySize)) +
+                       ((uintptr_t)isRDCSS << (isKCASSize + isDirtySize)) +
+                       ((uintptr_t)isKCAS << (isDirtySize)) +
                        ((uintptr_t)isDirty));
         }
 
+        // Test the behavior of casting to make sure nothing is lost or misplaced.
         static void testCast()
         {
             DescRef desc;
@@ -120,42 +203,38 @@ public:
             DescRef castBackDesc;
             for (size_t i = 0; i < tidSize; i++)
             {
-                for (size_t j = 0; j < fieldIDSize; j++)
+                for (size_t j = 0; j < seqSize; j++)
                 {
-                    for (size_t k = 0; k < seqSize; k++)
+                    desc.tid = i;
+                    desc.seq = j;
+                    castDesc = (T)desc;
+                    for (size_t l = 0; l < isRDCSSSize; l++)
                     {
-                        desc.tid = i;
-                        desc.fieldID = j;
-                        desc.seq = k;
-                        castDesc = (T)desc;
-                        for (size_t l = 0; l < isRDCSSSize; l++)
+                        for (size_t m = 0; m < isKCASSize; m++)
                         {
-                            for (size_t m = 0; m < isPMwCASSize; m++)
+                            for (size_t n = 0; n < isDirtySize; n++)
                             {
-                                for (size_t n = 0; n < isDirtySize; n++)
+                                if (l != 0)
                                 {
-                                    if (l != 0)
-                                    {
-                                        desc.isRDCSS = true;
-                                        castDesc = castDesc | RDCSSFlag;
-                                    }
-                                    if (m != 0)
-                                    {
-                                        desc.isPMwCAS = true;
-                                        castDesc = castDesc | PMwCASFlag;
-                                    }
-                                    if (n != 0)
-                                    {
-                                        desc.isDirty = true;
-                                        castDesc = castDesc | DirtyFlag;
-                                    }
-                                    castBackDesc = (DescRef)castDesc;
-                                    if (desc != castBackDesc)
-                                    {
-                                        std::cout << "Something is wrong with our custom type casting!" << std::endl;
-                                    }
-                                    assert(desc == castBackDesc);
+                                    desc.isRDCSS = true;
+                                    castDesc = castDesc | RDCSSFlag;
                                 }
+                                if (m != 0)
+                                {
+                                    desc.isKCAS = true;
+                                    castDesc = castDesc | PMwCASFlag;
+                                }
+                                if (n != 0)
+                                {
+                                    desc.isDirty = true;
+                                    castDesc = castDesc | DirtyFlag;
+                                }
+                                castBackDesc = (DescRef)castDesc;
+                                if (desc != castBackDesc)
+                                {
+                                    std::cout << "Something is wrong with our custom type casting!" << std::endl;
+                                }
+                                assert(desc == castBackDesc);
                             }
                         }
                     }
@@ -163,7 +242,8 @@ public:
             }
         }
     };
-    // Word descriptor
+    // Each KCAS Descriptor consists of K words.
+    // Each Word Descriptor has a word, plus extra auxiliary information, such as the sequence number.
     struct alignas(8) Word
     {
         std::atomic<T> *address;
@@ -175,48 +255,174 @@ public:
             return ((uintptr_t)address < (uintptr_t)word.address);
         }
     };
-    // KCAS descriptor.
-    struct alignas(8) Descriptor
+    struct alignas(8) WordDescriptor : Word
     {
-        // The status of the KCAS.
-        std::atomic<Status> status;
-        // The sequence number of the descriptor.
-        // If this sequence number doesn't match, then it must be associated with a different KCAS.
-        std::atomic<unsigned long> seq;
+        struct Mutable
+        {
+        private:
+            // Flag reserved to persist the whole descriptor.
+            static const size_t isDirtySize = 1;
+            // This will use whatever leftover bits remain while keeping the mutable word-sized.
+            static const size_t seqSize = 64 - isDirtySize;
+
+        public:
+            // The dirty bit. Must be cleared before access to the rest of the descriptor is valid.
+            bool isDirty : isDirtySize;
+            // The sequence number of the descriptor.
+            unsigned long seq : seqSize;
+
+            operator uintptr_t() const
+            {
+                assert(sizeof(uintptr_t) == sizeof(Mutable));
+                return (uintptr_t)(((uintptr_t)seq << (isDirtySize)) +
+                                   ((uintptr_t)isDirty));
+            }
+            Mutable() noexcept {}
+            Mutable(uintptr_t ptr)
+            {
+                assert(sizeof(uintptr_t) == sizeof(DescRef));
+                seq = (unsigned long)(((size_t)ptr >> (isDirtySize)) & (((size_t)1 << seqSize) - 1));
+                isDirty = (bool)(((size_t)ptr >> 0) & (((size_t)1 << isDirtySize) - 1));
+            }
+        };
+        // A mutable, stored in 64 bits.
+        std::atomic<WordDescriptor::Mutable> mutables;
+
+        // Just enough information to associate a KCAS descriptor with this Word descriptor.
+        unsigned long KCASseq;
+        unsigned short KCAStid;
+
+        WordDescriptor()
+        {
+            assert(std::atomic_is_lock_free(&mutables));
+        }
+    };
+    struct alignas(8) KCASDescriptor
+    {
+        struct Mutable
+        {
+        private:
+            // Flag reserved to persist the whole descriptor.
+            static const size_t isDirtySize = 1;
+            // Status of the KCAS as a whole.
+            static const size_t statusSize = 2;
+            // This will use whatever leftover bits remain while keeping the mutable word-sized.
+            static const size_t seqSize = 64 - statusSize - isDirtySize;
+
+        public:
+            // The dirty bit. Must be cleared before access to the rest of the descriptor is valid.
+            bool isDirty : isDirtySize;
+            // The status of the KCAS.
+            Status status : statusSize;
+            // The sequence number of the descriptor.
+            unsigned long seq : seqSize;
+
+            operator uintptr_t() const
+            {
+                assert(sizeof(uintptr_t) == sizeof(Mutable));
+                return (uintptr_t)(((uintptr_t)seq << (statusSize + isDirtySize)) +
+                                   ((uintptr_t)status << (isDirtySize)) +
+                                   ((uintptr_t)isDirty));
+            }
+            Mutable() noexcept {}
+            Mutable(uintptr_t ptr)
+            {
+                assert(sizeof(uintptr_t) == sizeof(DescRef));
+                seq = (unsigned long)(((size_t)ptr >> (statusSize + isDirtySize)) & (((size_t)1 << seqSize) - 1));
+                status = (Status)(((size_t)ptr >> isDirtySize) & (((size_t)1 << statusSize) - 1));
+                isDirty = (bool)(((size_t)ptr >> 0) & (((size_t)1 << isDirtySize) - 1));
+            }
+        };
+        // A mutable, stored in 64 bits.
+        std::atomic<KCASDescriptor::Mutable> mutables;
+
         // The number of words modified by the KCAS.
         size_t count;
         // The array of words modified by the KCAS.
         // NOTE: Everything beyond count elements are unused.
         alignas(8) Word words[K];
+
+        KCASDescriptor()
+        {
+            assert(std::atomic_is_lock_free(&mutables));
+        }
     };
-    // Our descriptor pool.
-    // NOTE: Word descriptors are built-in to KCAS descriptors.
-    Descriptor descriptors[P];
+    // Our descriptor pools.
+    // TODO: Recover these in a persistent environment.
+    // This simply involes saving the pools to file in NVM, using mmap.
+    KCASDescriptor KCASDescriptors[P];
+    WordDescriptor wordDescriptors[P];
 
     PMwCASManager()
     {
         // P and K should always be a power of 2.
         assert((P & (P - 1)) == 0);
         assert((K & (K - 1)) == 0);
-        // Initialize the descriptors and words.
+        // These types should be lock-free.
+        assert(std::atomic<T>{}.is_lock_free());
+        assert(std::atomic<DescRef>{}.is_lock_free());
+        // Initialize the KCAS descriptors.
+        // TODO: Change this behavior to support recovery.
         for (size_t i = 0; i < P; i++)
         {
+            typename KCASDescriptor::Mutable m;
+            // Marked as dirty for consistency.
+            m.isDirty = true;
+            // Initial status doesn't really matter.
+            m.status = Succeeded;
             // Though it doesn't particularly matter, we make sure all sequence numbers start at 0.
-            descriptors[i].seq.store(0);
+            m.seq = 0;
+
+            KCASDescriptors[i].mutables.store(m);
+            KCASDescriptors[i].count = 0;
+        }
+        // Initialize the Word descriptors.
+        for (size_t i = 0; i < P; i++)
+        {
+            typename WordDescriptor::Mutable m;
+            // Marked as dirty for consistency.
+            m.isDirty = true;
+            // Though it doesn't particularly matter, we make sure all sequence numbers start at 0.
+            m.seq = 0;
+
+            wordDescriptors[i].mutables.store(m);
         }
         return;
     }
-
+    // Gets the sequnce number regardless of descriptor type.
+    unsigned long getSeq(DescRef desc)
+    {
+        if (desc.isKCAS && !desc.isRDCSS)
+        {
+            return pcas_read(&(KCASDescriptors[desc.tid].mutables)).seq;
+        }
+        else if (!desc.isKCAS && desc.isRDCSS)
+        {
+            return pcas_read(&(wordDescriptors[desc.tid].mutables)).seq;
+        }
+        else
+        {
+            throw std::runtime_error("Requested a sequence number for an invalid descriptor reference");
+            return 0;
+        }
+    }
+    // KCAS Descriptor generation.
     DescRef createNew(size_t threadNum, size_t size, Word *words)
     {
         assert(threadNum < P);
         assert(0 < size && size <= K);
 
-        Descriptor *desc = &(descriptors[threadNum]);
+        KCASDescriptor *desc = &(KCASDescriptors[threadNum]);
         // Incrementing the sequence number will invalidate this descriptor.
-        unsigned long oldSeq = desc->seq.load();
+        typename KCASDescriptor::Mutable m = pcas_read<typename KCASDescriptor::Mutable>(&desc->mutables);
         // Update the sequnce number so our descriptor is considered new.
-        desc->seq.store(oldSeq + 1);
+        m.seq++;
+        m.status = Undecided;
+        m.isDirty = true;
+        desc->mutables.store(m);
+        persist(&desc->mutables, m);
+        // Now other threads cannot read this descriptor that is under construction.
+
         // Sort the words.
         std::sort(words, words + size);
         // Make sure the words are sorted correctly.
@@ -224,8 +430,8 @@ public:
         {
             assert(((uintptr_t)words[i].address) < ((uintptr_t)words[i + 1].address));
         }
+
         // Construct the new descriptor.
-        desc->status.store(Undecided);
         desc->count = size;
         for (size_t i = 0; i < size; i++)
         {
@@ -233,39 +439,93 @@ public:
         }
 
         // Validate the descriptor.
-        assert((desc->status.load() == Undecided));
+        assert((desc->mutables.load().status == Undecided));
         assert(0 < desc->count && desc->count <= K);
         for (size_t j = 0; j < desc->count; j++)
         {
             assert(desc->words[j].address != NULL);
-            assert((uintptr_t)desc->words[j].address > 100);
-            assert((uintptr_t)desc->words[j].address >= ((uintptr_t)&array[0]));
-            assert((uintptr_t)desc->words[j].address <= ((uintptr_t)&array[0] + (8 * ARRAY_SIZE)));
         }
 
+        // Flush the descriptor.
+        PERSIST_FLUSH_ONLY(desc, sizeof(KCASDescriptor));
         // Update the sequence number again.
-        desc->seq.store(oldSeq + 2);
+        m.seq++;
+        m.isDirty = true;
+        desc->mutables.store(m);
+        // Now flush the mutables and fence everything.
+        persist(&desc->mutables, m);
+        // Now this descriptor is valid and readable.
+
         // Return a descriptor reference.
         DescRef ref;
         ref.tid = threadNum;
-        ref.seq = oldSeq + 2;
-        // We make no assumptions here. These flags must be set later.
+        ref.seq = m.seq;
+        // We make limited assumptions here. Dirty flag may need to be set before use.
         ref.isRDCSS = false;
-        ref.isPMwCAS = false;
+        ref.isKCAS = true;
         ref.isDirty = false;
         return ref;
     }
-    // These functions must support address (std::atomic<T> *) and status (std::atomic<Status> *)
+    // RDCSS Descriptor generation.
+    DescRef createNew(size_t helpingThreadNum, Word word, DescRef KCASDesc)
+    {
+        // localThreadNum: A thread_local value. Determines which thread to make descriptors on.
+        assert(localThreadNum < P);
+        // helpingThreadNum: The thread number of the thread in charge of this KCAS.
+        assert(helpingThreadNum < P);
+
+        WordDescriptor *desc = &(wordDescriptors[localThreadNum]);
+        // Incrementing the sequence number will invalidate this descriptor.
+        typename WordDescriptor::Mutable m = pcas_read<typename WordDescriptor::Mutable>(&desc->mutables);
+        // Update the sequnce number so our descriptor is considered new.
+        m.seq++;
+        m.isDirty = true;
+        desc->mutables.store(m);
+        persist(&desc->mutables, m);
+        // Now other threads cannot read this descriptor that is under construction.
+
+        // Construct the new descriptor.
+        desc->address = word.address;
+        desc->oldVal = word.oldVal;
+        desc->newVal = word.newVal;
+
+        // This descriptor is inherently tied to the associated KCAS descriptor.
+        desc->KCASseq = KCASDesc.seq;
+        desc->KCAStid = helpingThreadNum;
+
+        // Validate the descriptor.
+        assert(desc->address != NULL);
+
+        // Flush the descriptor.
+        PERSIST_FLUSH_ONLY(desc, sizeof(WordDescriptor));
+        // Update the sequence number again.
+        m.seq++;
+        m.isDirty = true;
+        desc->mutables.store(m);
+        persist(&desc->mutables, m);
+        // Now this descriptor is valid and readable.
+
+        // Return a descriptor reference.
+        DescRef ref;
+        ref.tid = localThreadNum;
+        ref.seq = m.seq;
+        // We make limited assumptions here. Dirty flag may need to be set before use.
+        ref.isRDCSS = true;
+        ref.isKCAS = false;
+        ref.isDirty = false;
+        return ref;
+    }
+    // These functions must support address (std::atomic<T> *) and mutables (std::atomic<KCASDescriptor::Mutable> *)
     template <class U>
     U readField(DescRef desc, std::atomic<U> *field, bool &success)
     {
-        U result = field->load();
-        if (desc.seq != descriptors[desc.tid].seq)
+        U result = pcas_read(field);
+        // Compare our descriptor reference sequence number against the actual sequence number in the descriptor itself.
+        if (desc.seq != getSeq(desc))
         {
             success = false;
-            // NOTE: We shouldn't actually read this, but we need to return something.
+            // NOTE: We shouldn't actually read the result in this case, but we need to return something.
             // Always check success to validate first.
-            return result;
         }
         return result;
     }
@@ -274,8 +534,10 @@ public:
     {
         while (true)
         {
-            U expVal = field->load();
-            if (desc.seq != descriptors[desc.tid].seq)
+            U expVal = pcas_read(field);
+
+            // Compare our descriptor reference sequence number against the actual sequence number in the descriptor itself.
+            if (desc.seq != getSeq(desc))
             {
                 success = false;
                 return false;
@@ -290,31 +552,20 @@ public:
     template <class U>
     bool CASField(DescRef desc, U &fExp, U fNew, std::atomic<U> *field, bool &success)
     {
-        U fExpCopy = fExp;
-        while (true)
+        U expVal = pcas_read<U>(field);
+        if (desc.seq != getSeq(desc))
         {
-            U expVal = field->load();
-            if (desc.seq != descriptors[desc.tid].seq)
-            {
-                success = false;
-                return false;
-            }
-            if (expVal != fExp)
-            {
-                fExp = expVal;
-                return false;
-            }
-            bool CAS = field->compare_exchange_strong(fExp, fNew);
-            if (CAS)
-            {
-                if (fExpCopy != fExp)
-                {
-                    std::cout << "A bad thing happened!" << std::endl;
-                    continue;
-                }
-                return true;
-            }
+            success = false;
+            return false;
         }
+        if (expVal != fExp)
+        {
+            fExp = expVal;
+            return false;
+        }
+        // pcas will ensure field is persisted and marks fNew as dirty autoamtically.
+        bool CAS = pcas<U>(field, fExp, fNew);
+        return CAS;
     }
 
     // Used to hide descriptor construction.
@@ -328,45 +579,35 @@ public:
         // Run PMwCAS on our generated descriptor.
         bool ret = PMwCAS(desc);
 
-        // Confirm that nothing was left unfinished.
-        // Check every word modified.
-        for (size_t i = 0; i < size; i++)
-        {
-            // Cast the word to a DescRef.
-            DescRef leftoverRef = (DescRef)descriptors[threadNum].words[i].address->load();
-            // If any descriptor flags are still set.
-            if (leftoverRef.isPMwCAS || leftoverRef.isRDCSS)
-            {
-                // And the thread number matches
-                if (threadNum == leftoverRef.tid)
-                {
-                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
-                }
-                //if(descriptors[threadNum].seq==leftoverRef.seq){}
-            }
-        }
-
         return ret;
     }
     // Perform a persistent, multi-word CAS based on a descriptor pointer.
-    bool PMwCAS(DescRef desc)
+    bool PMwCAS(DescRef desc, std::atomic<T> *addr = NULL)
     {
-        // TODO: Helping may place RDCSS descriptors back in after execution completes?
-        // Status status = readField<Status>(desc, &descriptors[desc.tid].status, success);
+        // Fixed traversal order lets us skip inserting descriptors that have already been placed.
+        size_t start = 0;
+        if (addr != NULL)
+        {
+            for (size_t i = 0; i < KCASDescriptors[desc.tid].count; i++)
+            {
+                if (KCASDescriptors[desc.tid].words[i].address == addr)
+                {
+                    // Start on the next word.
+                    start = i + 1;
+                    break;
+                }
+            }
+        }
 
         // The status we will assign to our KCAS. Defaults to success unless changed.
         Status st = Succeeded;
         // Must operate in a fixed address traversal order.
-        // NOTE: We will assume the appropriate order was used when the descriptor was made.
-        for (size_t i = 0; i < descriptors[desc.tid].count; i++)
+        // This is already handled on descriptor construction.
+        for (size_t i = start; i < KCASDescriptors[desc.tid].count; i++)
         {
         retry:
-            // Create a word descriptor
-            DescRef wordDesc = desc;
-            wordDesc.fieldID = i;
-            wordDesc.isRDCSS = true;
-            wordDesc.isPMwCAS = false;
-            wordDesc.isDirty = false;
+            // Create a word descriptor.
+            DescRef wordDesc = createNew(desc.tid, KCASDescriptors[desc.tid].words[i], desc);
 
             // Attempt to place the descriptor using RDCSS.
             bool success = true;
@@ -377,30 +618,22 @@ public:
                 break;
             }
             // If the installation succeeded.
-            if (rval == descriptors[desc.tid].words[i].oldVal)
+            if (rval == wordDescriptors[wordDesc.tid].oldVal)
             {
                 // Continue to the next word.
                 continue;
             }
             // If it failed because of another PMwCAS in progress.
-            else if (((DescRef)rval).isPMwCAS)
+            else if (((DescRef)rval).isKCAS)
             {
                 // If the value stored there has not yet been persisted.
                 if (((DescRef)rval).isDirty)
                 {
                     // Persist it.
-                    persist(descriptors[desc.tid].words[i].address, rval);
-                }
-                // If another thread already started inserting our PMwCAS descriptors.
-                // NOTE: This case wasn't handled in the paper, for some reason.
-                if (desc.tid == ((DescRef)rval).tid && desc.seq == ((DescRef)rval).seq)
-                {
-                    // No need to insert more RDCSS descriptors.
-                    // Just finish the work installing PMwCAS descriptors.
-                    break;
+                    persist(KCASDescriptors[desc.tid].words[i].address, rval);
                 }
                 // We clashed with a PMwCAS. Help complete it.
-                PMwCAS((DescRef)rval);
+                PMwCAS((DescRef)rval, KCASDescriptors[desc.tid].words[i].address);
                 // Now that the obstruction is removed, try again.
                 goto retry;
             }
@@ -419,90 +652,77 @@ public:
         if (st == Succeeded)
         {
             // Persist all target words.
-            for (size_t i = 0; i < descriptors[desc.tid].count; i++)
+            for (size_t i = 0; i < KCASDescriptors[desc.tid].count; i++)
             {
-                // Recreate the expected word descriptor.
-                DescRef persistDesc = desc;
-                persistDesc.fieldID = i;
-                persistDesc.isRDCSS = false;
-                persistDesc.isPMwCAS = true;
-                persistDesc.isDirty = true;
-                // DEBUG: This should typically succeed. Keep a close eye on it.
-                if (persist(descriptors[desc.tid].words[i].address, (T)persistDesc) != (T)persistDesc)
-                {
-                    //std::cout << "Failed to persist!" << std::endl;
-                }
+                // This will effectively persist all locations.
+                // NOTE: This will persist the appropriate locations, even if something other than our expected KCAS descriptors are present.
+                // This shouldn't be a problem. We know we succeeded.
+                // At worst, this is persisting subsequent operations.
+                // The conditional nature of pcas_read should make it low-overhead though.
+                pcas_read(KCASDescriptors[desc.tid].words[i].address);
             }
         }
 
         // Finalize the status of the PMwCAS, whether success or failure.
-        Status expectedStatus = Undecided;
         bool success = true;
-        CASField<Status>(desc, expectedStatus, (Status)((uintptr_t)st | DirtyFlag), &descriptors[desc.tid].status, success);
-        Status status = readField<Status>(desc, &descriptors[desc.tid].status, success);
+        // The expected Mutable.
+        typename KCASDescriptor::Mutable mOld;
+        mOld.isDirty = false;
+        mOld.status = Undecided;
+        mOld.seq = desc.seq;
+        // The updated Mutable.
+        typename KCASDescriptor::Mutable mNew;
+        mNew.isDirty = true;
+        mNew.status = st;
+        mNew.seq = desc.seq;
+        // Try to update the Mutable.
+        CASField<typename KCASDescriptor::Mutable>(desc, mOld, mNew, &KCASDescriptors[desc.tid].mutables, success);
+        // Persist the Mutable. Only happens if we succeeded.
+        persist(&KCASDescriptors[desc.tid].mutables, mNew);
         // If the descriptor changed from under us, then the PMwCAS is already over.
         if (!success)
         {
             return false;
-        }
-        if ((uintptr_t)status & DirtyFlag)
-        {
-            // TODO: Verify success. What does failure mean here?
-            PMwCASManager<Status, K, P>::persist(&descriptors[desc.tid].status, status);
-            status = (Status)((uintptr_t)status & ~DirtyFlag);
         }
 
         // Install the final values.
         // DEBUG: Used to check if CAS failed.
         bool CAS1 = true;
         bool CAS2 = true;
-        for (size_t i = 0; i < descriptors[desc.tid].count; i++)
+        for (size_t i = 0; i < KCASDescriptors[desc.tid].count; i++)
         {
-        retryInstall:
             // If we succeeded, we will place the new values.
             // If we failed, we will restore the old values.
-            T v = ((status == Succeeded)
-                       ? descriptors[desc.tid].words[i].newVal
-                       : descriptors[desc.tid].words[i].oldVal);
-            // We expect a PMwCAS descriptor with a fieldID matching the current word.
-            desc.fieldID = i;
-            // And one that hasn't persisted.
+            T v = ((st == Succeeded)
+                       ? KCASDescriptors[desc.tid].words[i].newVal
+                       : KCASDescriptors[desc.tid].words[i].oldVal);
+            // We expect a PMwCAS descriptor that hasn't persisted.
             T expected = (T)((uintptr_t)desc | PMwCASFlag | DirtyFlag);
-            // Replace it with a value, unpersisted.
             T rval = (T)expected;
-            CAS1 = CASField<T>(desc, rval, (T)((uintptr_t)v | DirtyFlag), descriptors[desc.tid].words[i].address, success);
+            // Replace it with a value.
+            // CASField will automatically mark it as dirty.
+            CAS1 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address, success);
+            // Descriptor changed. Work must be complete.
             if (!success)
             {
                 break;
             }
 
-            // If we failed because the descriptor was persisted.
+            // If we failed because the descriptor was already persisted.
             if ((uintptr_t)rval == ((uintptr_t)desc | PMwCASFlag))
             {
                 // Try again, assuming that the descriptor *is* persisted.
-                T expected2 = (T)((uintptr_t)expected & ~DirtyFlag);
-                CAS2 = CASField<T>(desc, expected2, v, descriptors[desc.tid].words[i].address, success);
+                rval = (T)((uintptr_t)expected & ~DirtyFlag);
+                CAS2 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address, success);
+                // Descriptor changed. Work must be complete.
                 if (!success)
                 {
                     break;
                 }
             }
             // Persist any change that occurs.
-            persist(descriptors[desc.tid].words[i].address, v);
+            persist(KCASDescriptors[desc.tid].words[i].address, v);
 
-            // Cast the word to a DescRef.
-            DescRef leftoverRef = (DescRef)descriptors[desc.tid].words[i].address->load();
-            // If any descriptor flags are still set.
-            if (leftoverRef.isPMwCAS || leftoverRef.isRDCSS)
-            {
-                // And the thread number matches
-                if (desc.tid == leftoverRef.tid && desc.seq == leftoverRef.seq)
-                {
-                    //goto retryInstall;
-                    // TODO: Situation:
-                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
-                }
-            }
             // DEBUG: Counters
             if (desc.tid != localThreadNum && (CAS1 || CAS2))
             {
@@ -514,8 +734,8 @@ public:
             }
         }
         // Return our final success (or failure).
-        assert((status & AddressMask) != Undecided);
-        return (status == Succeeded);
+        assert(st != Undecided);
+        return (st == Succeeded);
     }
     // Attempt to read an address.
     // We must ensure all flag conditions have been handled before reading the address.
@@ -525,13 +745,10 @@ public:
         {
             // Read the value.
             T v = address->load();
-            // Make sure the RDCSSFlag is at the same bit as the isRDCSS bitfield.
-            assert(((bool)(((uintptr_t)v & RDCSSFlag) != 0)) == ((bool)(((DescRef)v).isRDCSS)));
             // If it's part of an RDCSS.
             if ((uintptr_t)v & RDCSSFlag)
             {
                 assert(((DescRef)v).tid != localThreadNum);
-                // TODO: Stuck in a loop here. v can be associated with an outdated descriptor.
                 // Finish the RDCSS.
                 CompleteInstall((DescRef)v);
                 // And try to read it again.
@@ -548,11 +765,6 @@ public:
             // If the value is part of a PMwCAS.
             if ((uintptr_t)v & PMwCASFlag)
             {
-                // DEBUG: This should never happen.
-                if (((DescRef)v).tid == localThreadNum)
-                {
-                    std::cout << "Found a PMwCAS for own tid " << ((DescRef)v).tid << " with seq# " << ((DescRef)v).seq << std::endl;
-                }
                 // Help complete the KCAS.
                 PMwCAS((DescRef)v);
                 // And try to read it again.
@@ -562,42 +774,31 @@ public:
             return v;
         }
     }
-    // Flush and fence the data stored in the address, then unflag the dirty bit atomically.
-    static T persist(std::atomic<T> *address, T value)
-    {
-        CLWB(address);
-        SFENCE;
-        address->compare_exchange_strong(value, (T)((uintptr_t)value & ~DirtyFlag));
-        return value;
-    }
 
 private:
     // Use RDCSS to replace a value with a descriptor.
     // desc should reference a valid tid and fieldID to identify the correct word descriptor.
     T InstallMwCASDescriptor(DescRef desc, bool &success)
     {
-        // Mark our descriptor.
-        desc.isRDCSS = true;
         T val;
         while (true)
         {
             // This old value could be associated with a newer descriptor.
             // CASField will fail if the sequence numbers don't match, so problems with using a newer descriptor by accident will be handled.
-            T oldVal = descriptors[desc.tid].words[desc.fieldID].oldVal;
+            T oldVal = wordDescriptors[desc.tid].oldVal;
             // This will be replaced with whatever was actually in the address field when we did the CAS.
             val = oldVal;
-            // Attempt the replacement.
-            bool CAS = CASField<T>(desc, val, (T)desc, descriptors[desc.tid].words[desc.fieldID].address, success);
-            assert((CAS && val == oldVal) ||
-                   (!CAS && val != oldVal) ||
-                   !success);
+            // Replace with an RDCSS Descriptor.
+            bool CAS = CASField<T>(desc, val, (T)desc, wordDescriptors[desc.tid].address, success);
+            // One of these cases will always be true.
+            assert((CAS && (val == oldVal)) ||
+                   (!CAS && (val != oldVal)) ||
+                   (!CAS && !success));
             // CAS can fail if the sequence numbers didn't match.
             if (!success)
             {
                 return val;
             }
-            // Make sure the RDCSSFlag is at the same bit as the isRDCSS bitfield.
-            assert(((bool)(((uintptr_t)val & RDCSSFlag) != 0)) == ((bool)(((DescRef)val).isRDCSS)));
             // If the value was an RDCSS descriptor.
             if (((DescRef)val).isRDCSS)
             {
@@ -606,26 +807,11 @@ private:
                 // Try the installation again.
                 continue;
             }
-            // If the value matched what we had expected.
-            else if (val == oldVal)
+            // If the value matched what we had expected (success, by us or someone else).
+            if (val == oldVal)
             {
                 // Finish the installation of our own descriptor.
                 CompleteInstall(desc);
-            }
-
-            // TODO: Fix this issue.
-            // Somehow, the install doesn't actually complete.
-            // Cast the word to a DescRef.
-            DescRef leftoverRef = (DescRef)descriptors[desc.tid].words[desc.fieldID].address->load();
-            // If any descriptor flags are still set.
-            if (leftoverRef.isRDCSS)
-            {
-                // And the thread number matches
-                if (desc.tid == leftoverRef.tid)
-                {
-                    //continue;
-                    std::cout << "A bad thing happened for tid " << leftoverRef.tid << " with seq# " << leftoverRef.seq << std::endl;
-                }
             }
 
             break;
@@ -634,36 +820,46 @@ private:
         return val;
     }
     // Complete the RDCSS operation.
-    bool CompleteInstall(DescRef desc)
+    bool CompleteInstall(DescRef RDCSSdesc)
     {
-        // Prepare to place the new value (a KCAS descriptor), marked initially as dirty and part of PMwCAS.
-        DescRef ptr = desc;
-        assert(ptr.tid == desc.tid);
-        assert(ptr.seq == desc.seq);
-        ptr.isRDCSS = false;
-        // NOTE: The only place where isPMwCAS is set true for use in shared memory.
-        ptr.isPMwCAS = true;
-        ptr.isDirty = true;
-
         bool success = true;
+        // We create a dummy descriptor reference so we can verify the KCAS sequence number hasn't changed.
+        // It is also sufficient for actual placement in the data structure.
+        DescRef KCASDescDummy;
+        KCASDescDummy.isDirty = false;
+        KCASDescDummy.isKCAS = true;
+        KCASDescDummy.isRDCSS = false;
+        KCASDescDummy.seq = wordDescriptors[RDCSSdesc.tid].KCASseq;
+        KCASDescDummy.tid = wordDescriptors[RDCSSdesc.tid].KCAStid;
         // Determine whether we are placing the KCAS descriptor or restoring the old value.
-        bool u = (readField<Status>(desc, &descriptors[desc.tid].status, success) == Undecided);
+        bool u = (readField<typename KCASDescriptor::Mutable>(
+                      KCASDescDummy,
+                      &KCASDescriptors[wordDescriptors[RDCSSdesc.tid].KCAStid].mutables,
+                      success)
+                      .status == Undecided);
         // Mismatch in sequence numbers just means the owning thread finished this already.
         if (!success)
         {
-            // But if we are the owning thread, then something is wrong here.
-            assert(localThreadNum != desc.tid);
-
-            return false;
+            // If the sequence number has changed, the KCAS desciptor is already gone.
+            // This means placing the KCAS will get it stuck in the data structure.
+            // Instead, revert the RDCSS.
+            // This could have only happened if we are a helper that wrongly succeeded in placing the RDCSS earlier, because the old value happened to be the same.
+            // This is an instance of the ABA problem.
+            // To revert, set u to false.
+            u = false;
         }
         // Attempt the CAS. If we fail, it just means some other thread succeeded.
-        T expected = (T)desc;
+        T expected = (T)RDCSSdesc;
         // This should be always set already. Check to make sure.
         assert(((uintptr_t)expected & RDCSSFlag) != 0);
-        //expected = (uintptr_t)expected | RDCSSFlag;
-        T oldVal = descriptors[desc.tid].words[desc.fieldID].oldVal;
-        // TODO: Try to figure out how this is succeeding multiple times for the same descriptor. Or is removal lying about success?
-        return CASField<T>(desc, expected, u ? (T)ptr : oldVal, descriptors[desc.tid].words[desc.fieldID].address, success);
+        T oldVal = wordDescriptors[RDCSSdesc.tid].oldVal;
+        return CASField<T>(RDCSSdesc, expected, u ? (T)KCASDescDummy : oldVal, wordDescriptors[RDCSSdesc.tid].address, success);
+    }
+
+    // TODO: Implement this.
+    // TODO: For the hash map, upon recovery, look for descriptors in the hash map and complete them.
+    void recover()
+    {
     }
 };
 
