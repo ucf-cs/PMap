@@ -592,7 +592,22 @@ public:
             table->chm.slots.store(0);
             for (size_t i = 0; i < size; i++)
             {
-                Value V = ((Table *)address)->pairs[i].value;
+                Value V = ((Table *)address)->pairs[i].value.load();
+                Key K = ((Table *)address)->pairs[i].key.load();
+
+                // While we're at it, check for inconsistent table entries.
+                // THis is the only situation I've come up with where we could have a problem with partial persists.
+                if (K != KINITIAL && V == VINITIAL)
+                {
+                    // If the key has been set but the value hasn't, then we have an incomplete insert on our hands.
+                    // Just make it a tombstone since we don't know what value it should have been.
+                    Table::CASvalue(table, i, VINITIAL, VTOMBSTONE);
+                    // Update the replaced value for subsequent use in this loop.
+                    V = ((Table *)address)->pairs[i].value.load();
+                    // We should always succeed. We are running sequentially, after all.
+                    assert(V == VTOMBSTONE);
+                }
+
                 // Anything that's not a sentinel.
                 if (V != VINITIAL && V != VTOMBSTONE && V != TOMBPRIME)
                 {
