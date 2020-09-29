@@ -44,14 +44,20 @@ namespace ucf
             return c->update(el << 3, ((((size_t)1 << 61) - 3) << 3), ConcurrentHashMap<KeyT, ValT>::Table::increment);
         }
 
-        container_type(const TestOptions &opt)
+        container_type(const TestOptions &opt, bool reconstruct = false)
         {
             const size_t realcapacity = 1 << opt.capacity;
             const char *fn = opt.filename.c_str();
-            c = new ConcurrentHashMap<KeyT, ValT>(fn, realcapacity);
+            c = new ConcurrentHashMap<KeyT, ValT>(fn, realcapacity, reconstruct);
             if (c == nullptr)
                 throw std::runtime_error("could not allocate");
             return;
+        }
+
+        bool isConsistent()
+        {
+            // TODO: Make some sort of consistency check.
+            // Check each key and value.
         }
     };
 

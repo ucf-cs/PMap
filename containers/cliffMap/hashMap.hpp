@@ -471,23 +471,13 @@ public:
         // The number of pairs that can fit in the table.
         size_t len;
 
-        Table(size_t tableCapacity, size_t existingSize, KVpair *pairs)
+        Table(size_t tableCapacity, size_t existingSize, KVpair *pairs = NULL)
         {
             assert(tableCapacity % 2 == 0);
             assert(tableCapacity >= MIN_SIZE);
             new (&chm) CHM(tableCapacity, existingSize);
-            // NOTE: We assume our pairs have already been memory mapped by this point.
-            assert(pairs != nullptr);
+            assert(pairs != NULL);
             this->pairs = pairs;
-            for (size_t i = 0; i < tableCapacity; i++)
-            {
-                // Initialize these to a default, reserved value.
-                pairs[i].key.store(setMark(KINITIAL,DirtyFlag)I;
-                pairs[i].value.store(setMark(VINITIAL,DirtyFlag));
-            }
-            // Persist all keys and values.
-            // Everything else can be inferred upon recovery.
-            PERSIST(pairs, sizeof(KVpair *) * tableCapacity);
             len = tableCapacity;
             return;
         }
@@ -499,14 +489,14 @@ public:
         Key key(size_t idx)
         {
             assert(idx < len);
-            Key ret = pcas_read<Key>(pairs[idx].key);
+            Key ret = pcas_read<Key>(&pairs[idx].key);
             return ret;
         }
         // Function to get a value at an index.
         Value value(size_t idx)
         {
             assert(idx < len);
-            Value ret = pcas_read<Value>(pairs[idx].value);
+            Value ret = pcas_read<Value>(&pairs[idx].value);
             return ret;
         }
         // Function to CAS a key.
@@ -514,7 +504,7 @@ public:
         {
             assert(idx < len);
             Key oldKeyRef = oldKey;
-            pcas<Key>(pairs[idx].key, oldKeyRef, newKey);
+            pcas<Key>(&pairs[idx].key, oldKeyRef, newKey);
             return oldKeyRef;
         }
         // Function to CAS a value.
@@ -522,7 +512,7 @@ public:
         {
             assert(idx < table->len);
             Value oldValueRef = oldValue;
-            pcas<Value>(table->pairs[idx].value, oldValueRef, newValue);
+            pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
         // Function to increment a value.
@@ -538,7 +528,7 @@ public:
             // NOTE: The correct way to perform this addition is entirely dependent on the type of Value.
             newValue = ((oldValue >> 3) + 1) << 3;
             // Must be CAS rather than FAA because the old value might be a sentinel.
-            pcas<Value>(table->pairs[idx].value, oldValueRef, newValue);
+            pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
     };
@@ -546,11 +536,15 @@ public:
     // Constructor.
     ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE, bool reconstruct = true)
     {
+        // NOTE: Without resizing, we can just grab the static size of the table for recovery. size is the number of KVPairs.
+
         // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
         // This will hold the file descriptor of our memory mapped file.
+        int fd;
         // This will hold the memory address of our memory mapped table.
         void *address;
-        int fd;
+        // A temporary place to reference the table.
+        Table *table;
         if (reconstruct)
         {
             // Try to open an existing hash table.
@@ -562,7 +556,6 @@ public:
             fd = -1;
         }
 
-        //fprintf(stderr, "errno %d: %s\n", errno, strerror(errno));
         // If we succeeded, just map the existing data.
         if (fd != -1)
         {
@@ -575,36 +568,42 @@ public:
             //     fprintf(stderr, "Failed to read the existing file's size.\n");
             // }
             // size_t length = finfo.st_size;
-            size_t length = sizeof(Table) + (sizeof(KVpair) * size);
+
+            // We are getting the fixed size for now.
+            // TODO: Support resizing later.
+            size_t length = sizeof(KVpair) * size;
             // Map the file.
             address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
             if ((intptr_t)address == -1)
             {
                 // error
-                std::cerr << "Failed to mmap the existing file. errno = " << errno << ", " << strerror(errno)
-                          << std::endl;
+                std::cerr << "Failed to mmap the existing file. errno = "
+                          << errno << ", " << strerror(errno) << std::endl;
                 throw std::logic_error("mmap existing file failed.");
             }
-            // Assign the KV pairs.
-            ((Table *)address)->pairs = (KVpair *)((uintptr_t)address + sizeof(Table));
-            // Use the KV pairs to determine the number of used and free entries in the table.
-            ((Table *)address)->chm.size.store(0);
-            ((Table *)address)->chm.slots.store(0);
+
+            // Allocate our table.
+            // We pass in the asigned location of our KV pairs to assign them to the structure.
+            // We pass in the size of the table to assign the length.
+            table = new Table(size, 0, (KVpair *)address);
+
+            // Use the KV pairs to infer the number of used and free entries in the table.
+            table->chm.size.store(0);
+            table->chm.slots.store(0);
             for (size_t i = 0; i < size; i++)
             {
                 Value V = ((Table *)address)->pairs[i].value;
-                if (V != VINITIAL && V != VTOMBSTONE)
+                // Anything that's not a sentinel.
+                if (V != VINITIAL && V != VTOMBSTONE && V != TOMBPRIME)
                 {
-                    ((Table *)address)->chm.size.fetch_add(1);
+                    table->chm.size.fetch_add(1);
                 }
-                else if (V != VTOMBSTONE)
+                // Anything left that's not a tombstone.
+                else if (V != VTOMBSTONE && V != TOMBPRIME)
                 {
-                    ((Table *)address)->chm.slots.fetch_add(1);
+                    table->chm.slots.fetch_add(1);
                 }
             }
-            // The length the table is already known and set.
-            // We still assign it here, just for clarity, since it can also be inferred using the file size.
-            ((Table *)address)->len = size;
         }
         // If file doesn't exist yet. Try to make it.
         else
@@ -617,8 +616,8 @@ public:
                 std::cerr << "Failed to create or open the file." << std::endl;
                 throw std::runtime_error("cannot create or open file");
             }
-            // Allocate enough space for the table and the KV pairs.
-            size_t length = sizeof(Table) + (sizeof(KVpair) * size);
+            // Allocate enough space for the KV pairs.
+            size_t length = sizeof(KVpair) * size;
             // Truncate will actually extend the size of the file by filling with NULL.
             if (ftruncate(fd, length) == -1)
             {
@@ -626,16 +625,34 @@ public:
                 std::cerr << "Failed to adjust file size." << std::endl;
                 throw std::runtime_error("cannot create or open file");
             }
-            // Map the file.
-            address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            // Placement new will allocate our table within the memory mapped region.
-            // We pass in the asigned location of our KV pairs.
-            new (address) Table(size, 0, (KVpair *)((uintptr_t)address + sizeof(Table)));
+            // Allocate our file.
+            KVpair *pairs = (KVpair *)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+            if ((intptr_t)pairs == -1)
+            {
+                // error
+                std::cerr << "Failed to mmap a new file. errno = "
+                          << errno << ", " << strerror(errno) << std::endl;
+                throw std::logic_error("mmap new file failed.");
+            }
+            // Initialize the new file.
+            for (size_t i = 0; i < size; i++)
+            {
+                // Initialize these to a default, reserved value.
+                pairs[i].key.store((Key)setMark(KINITIAL, DirtyFlag));
+                pairs[i].value.store((Value)setMark(VINITIAL, DirtyFlag));
+            }
+            // Persist all keys and values.
+            // Everything else can be inferred upon recovery.
+            PERSIST(pairs, sizeof(KVpair *) * size);
+            // Allocate our table.
+            // We pass in the location of our KV pairs to assign them to the structure.
+            // We pass in the size of the table to assign the length.
+            table = new Table(size, 0, pairs);
         }
         // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
         close(fd);
-        // Store this address as the table.
-        table.store((Table *)address);
+        // Store the table.
+        this->table.store(table);
         return;
     }
     ConcurrentHashMap(size_t sz = Table::MIN_SIZE)

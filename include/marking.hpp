@@ -18,7 +18,7 @@ static const uintptr_t MigrationFlag = PMwCASFlag | RDCSSFlag;
 static const uintptr_t AddressMask = ~(DirtyFlag | PMwCASFlag | RDCSSFlag | MigrationFlag);
 
 // Pointer marking.
-// Offset can be set from 0-2 to mark different bits.
+// Pass in flags to mark different bits.
 inline void *setMark(uintptr_t p, size_t flag)
 {
     return (void *)(p | flag);

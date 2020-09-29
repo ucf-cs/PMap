@@ -62,6 +62,11 @@
         "csignal": "cpp",
         "condition_variable": "cpp",
         "unordered_set": "cpp",
-        "mutex": "cpp"
+        "mutex": "cpp",
+        "forward_list": "cpp",
+        "random": "cpp",
+        "shared_mutex": "cpp",
+        "variant": "cpp",
+        "bit": "cpp"
     }
 }
