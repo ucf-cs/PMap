@@ -26,6 +26,9 @@ static constexpr size_t CACHELINESZ = 64;
 static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
 #endif
 
+static constexpr bool KILL_HARD = true;
+static constexpr bool ALWAYS_RUN_CONSISTENCY_CHECKS = false;
+
 // Test options can be overridden by command line.
 // The test itself has final say in which parameters are used.
 struct TestOptions
@@ -48,15 +51,15 @@ struct TestOptions
     // TODO: Print out final arguments used.
     void print()
     {
-        std::cout << "*** concurrent container test "
+        std::cout <<    "*** concurrent container test "
                   << "\n***          number of threads: " << numthreads
                   << "\n*** total number of operations: " << numops
                   << "\n***       total number of runs: " << numruns
-                  << "\n***      initial capacity (base 2): " << capacity
-                  << "\n***                actual capacity: " << (1 << capacity)
+                  << "\n***  initial capacity (base 2): " << capacity
+                  << "\n***            actual capacity: " << (1 << capacity)
                   << "\n***                mapped file: " << filename
                   << "\n***                  wipe file: " << wipeFile
-                  //<< "\n***             test type: " << typeid(test_type).name()
+                  //<< "\n***                  test type: " << typeid(test_type).name()
                   //<< "\n***             container type: " << typeid(container_type).name()
                   << std::endl;
         return;

@@ -39,6 +39,10 @@
 
 // Fast hashing library.
 #include "xxhash.hpp"
+// Persistence functions.
+#include "persistence.hpp"
+// Pointer marking functions and flags.
+#include "marking.hpp"
 
 #include "define.hpp"
 
@@ -52,38 +56,9 @@
 #include <ctype.h>
 #include <errno.h>
 
-// CLWB intrinsic?
-#include <immintrin.h>
-
-// Pointer marking.
-// Offset can be set from 0-2 to mark different bits.
-inline void *setMark(uintptr_t p, size_t offset)
-{
-    return (void *)(p | (uintptr_t)(1 << offset));
-}
-inline void *clearMark(uintptr_t p, size_t offset)
-{
-    return (void *)(p & (uintptr_t) ~(1 << offset));
-}
-inline void *isMarked(uintptr_t p, size_t offset)
-{
-    return (void *)(p & (uintptr_t)(1 << offset));
-}
-
 // These are used to enable and disable different variants of our design.
 // TODO: Debug resizing.
 //#define RESIZE
-#define NVM
-
-#ifdef NVM
-#define SFENCE __builtin_ia32_sfence()
-// TODO: Requires machine support. Can try Intel intrinsic or raw assembly.
-#define CLWB(p) //__asm__ __volatile__("clwb (%0)\n\t" : : "r"(p)) //_mm_clwb(p)
-#else
-// Noop these instructions.
-#define SFENCE
-#define CLWB(p)
-#endif
 
 // TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 inline const size_t REPROBE_LIMIT = 10;
@@ -205,10 +180,10 @@ public:
                 // Mark what we see in the old table to prevent future updates.
                 Value oldVal = oldTable->value(idx);
                 // Keep trying to mark the value until we succeed.
-                while (!isMarked((uintptr_t)oldVal, 0))
+                while (!isMarked((uintptr_t)oldVal, MigrationFlag))
                 {
                     // If there isn't a usable value to migrate, replace it with a tombprime. Otherwise, mark it.
-                    Value mark = (oldVal == VINITIAL || oldVal == VTOMBSTONE) ? TOMBPRIME : (Value)setMark((uintptr_t)oldVal, 0);
+                    Value mark = (oldVal == VINITIAL || oldVal == VTOMBSTONE) ? TOMBPRIME : (Value)setMark((uintptr_t)oldVal, MigrationFlag);
                     // Attempt the CAS.
                     Value actualVal = CASvalue(oldTable, idx, oldVal, mark);
                     // If we succeeded.
@@ -240,7 +215,7 @@ public:
                     return false;
                 }
                 // Try to copy the value from the old table into the new table.
-                Value oldUnmarked = (Value)clearMark((uintptr_t)oldVal, 0);
+                Value oldUnmarked = (Value)clearMark((uintptr_t)oldVal, MigrationFlag);
                 // If this was a tombstone, whe should have already finished. This should be impossible.
                 assert(oldUnmarked != VTOMBSTONE);
                 // Attempt to copy the value into the new table.
@@ -483,7 +458,7 @@ public:
             }
 #endif
         };
-        // NOTE: Hashes are only needed if pointer comparison is insuccicient for comparison, so we don't use it in this implementation.
+        // NOTE: Hashes are only needed if pointer comparison is insufficient for comparison, so we don't use it in this implementation.
         // Keys and values.
         KVpair *pairs;
 
@@ -507,13 +482,12 @@ public:
             for (size_t i = 0; i < tableCapacity; i++)
             {
                 // Initialize these to a default, reserved value.
-                SFENCE;
-                pairs[i].key.store(KINITIAL);
-                CLWB(&(pairs[i].key));
-                SFENCE;
-                pairs[i].value.store(VINITIAL);
-                CLWB(&pairs[i].value);
+                pairs[i].key.store(setMark(KINITIAL,DirtyFlag)I;
+                pairs[i].value.store(setMark(VINITIAL,DirtyFlag));
             }
+            // Persist all keys and values.
+            // Everything else can be inferred upon recovery.
+            PERSIST(pairs, sizeof(KVpair *) * tableCapacity);
             len = tableCapacity;
             return;
         }
@@ -525,18 +499,14 @@ public:
         Key key(size_t idx)
         {
             assert(idx < len);
-            CLWB(&pairs[idx].key);
-            Key ret = pairs[idx].key.load();
-            SFENCE;
+            Key ret = pcas_read<Key>(pairs[idx].key);
             return ret;
         }
         // Function to get a value at an index.
         Value value(size_t idx)
         {
             assert(idx < len);
-            CLWB(&pairs[idx].value);
-            Value ret = pairs[idx].value.load();
-            SFENCE;
+            Value ret = pcas_read<Value>(pairs[idx].value);
             return ret;
         }
         // Function to CAS a key.
@@ -544,22 +514,17 @@ public:
         {
             assert(idx < len);
             Key oldKeyRef = oldKey;
-            SFENCE;
-            pairs[idx].key.compare_exchange_strong(oldKeyRef, newKey);
-            SFENCE;
+            pcas<Key>(pairs[idx].key, oldKeyRef, newKey);
             return oldKeyRef;
         }
         // Function to CAS a value.
         static Value CASvalue(Table *table, size_t idx, Value oldValue, Value newValue)
         {
             assert(idx < table->len);
-            Key oldValueRef = oldValue;
-            SFENCE;
-            table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
-            SFENCE;
+            Value oldValueRef = oldValue;
+            pcas<Value>(table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
-
         // Function to increment a value.
         static Value increment(Table *table, size_t idx, Value oldValue, Value newValue)
         {
@@ -572,23 +537,31 @@ public:
             // Our actual new value here is dependent on the old value.
             // NOTE: The correct way to perform this addition is entirely dependent on the type of Value.
             newValue = ((oldValue >> 3) + 1) << 3;
-            SFENCE;
             // Must be CAS rather than FAA because the old value might be a sentinel.
-            table->pairs[idx].value.compare_exchange_strong(oldValueRef, newValue);
-            SFENCE;
+            pcas<Value>(table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
     };
 
     // Constructor.
-    ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE)
+    ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE, bool reconstruct = true)
     {
         // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
         // This will hold the file descriptor of our memory mapped file.
         // This will hold the memory address of our memory mapped table.
         void *address;
-        // Try to open an existing hash table.
-        int fd = open(fileName, O_RDWR);
+        int fd;
+        if (reconstruct)
+        {
+            // Try to open an existing hash table.
+            fd = open(fileName, O_RDWR);
+        }
+        else
+        {
+            // Report table doesn't exist.
+            fd = -1;
+        }
+
         //fprintf(stderr, "errno %d: %s\n", errno, strerror(errno));
         // If we succeeded, just map the existing data.
         if (fd != -1)
@@ -665,12 +638,10 @@ public:
         table.store((Table *)address);
         return;
     }
-
     ConcurrentHashMap(size_t sz = Table::MIN_SIZE)
         : ConcurrentHashMap("./hashmap.dat", sz)
     {
     }
-
     ~ConcurrentHashMap()
     {
         size_t size = table.load()->chm.size.load();
@@ -688,43 +659,35 @@ public:
     {
         return table.load()->chm.size.load();
     }
-
     bool isEmpty()
     {
         return size() == 0;
     }
-
     bool containsKey(Key key)
     {
         return (get(key) != KINITIAL);
     }
-
     Value put(Key key, Value value)
     {
         return putIfMatch(key, value, NO_MATCH_OLD);
     }
-
     Value putIfAbsent(Key key, Value value)
     {
         return putIfMatch(key, value, VTOMBSTONE);
     }
-
     bool remove(Key key)
     {
         return putIfMatch(key, VTOMBSTONE, NO_MATCH_OLD);
     }
-
     // Remove key with specified value.
     bool remove(Key key, Value value)
     {
         return putIfMatch(key, VTOMBSTONE, value) == value;
     }
-
     bool replace(Key key, Value oldValue, Value newValue)
     {
         return (putIfMatch(key, newValue, oldValue) == oldValue);
     }
-
     // Accept an arbitrary function to replace the use of standard CAS.
     // Enables more complex logic by allowing the new value to adapt based on the actual old value.
     Value update(Key key, Value value, Value function(Table *table, size_t idx, Value oldValue, Value newValue))
@@ -737,7 +700,7 @@ public:
         assert(newVal != VINITIAL);
         assert(oldVal != VINITIAL);
         Value retVal = putIfMatch(table.load(), key, newVal, oldVal, CAS);
-        assert(!isMarked(retVal, 0));
+        assert(!isMarked(retVal, MigrationFlag));
         return retVal == VTOMBSTONE ? VINITIAL : retVal;
     }
 
@@ -790,7 +753,7 @@ public:
                 // We found the target key.
 #ifdef RESIZE
                 // Check to make sure there isn't a table copy in progress.
-                if (!isMarked((uintptr_t)V, 0))
+                if (!isMarked((uintptr_t)V, MigrationFlag))
                 {
                     // No table copy.
                     // We can return the assoicated value.
@@ -828,7 +791,7 @@ public:
     {
         size_t fullhash = Hash{}(key);
         Value V = getImpl(table, key, fullhash);
-        assert(!isMarked((uintptr_t)V, 0));
+        assert(!isMarked((uintptr_t)V, MigrationFlag));
         return V;
     }
 
@@ -837,8 +800,8 @@ public:
                      Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
         assert(newVal != VINITIAL);
-        assert(!isMarked(newVal, 0));
-        assert(!isMarked(oldVal, 0));
+        assert(!isMarked(newVal, MigrationFlag));
+        assert(!isMarked(oldVal, MigrationFlag));
         size_t len = table->len;
         size_t idx = Hash{}(key) & (len - 1);
 
@@ -935,7 +898,7 @@ public:
             // And we are doing a fresh key insert while the table is nearly full.
             ((V == VINITIAL && table->chm.tableFull(reprobeCount, len)) ||
              // Or our value is primed.
-             isMarked((uintptr_t)V, 0)))
+             isMarked((uintptr_t)V, MigrationFlag)))
         {
             // Force the table copy to start.
             newTable = table->chm.resize(this, table);
@@ -951,7 +914,7 @@ public:
         // Update the existing table.
         while (true)
         {
-            assert(!isMarked((uintptr_t)V, 0));
+            assert(!isMarked((uintptr_t)V, MigrationFlag));
 
             // May want to quit early if the slot doesn't contain the expected value.
 
@@ -1004,7 +967,7 @@ public:
             }
 #ifdef RESIZE
             // If a primed value was is present (placed by us or someone else), re-run put on the new table.
-            if (isMarked((uintptr_t)table->value(idx), 0))
+            if (isMarked((uintptr_t)table->value(idx), MigrationFlag))
             {
                 return putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == VINITIAL), key, newVal, oldVal);
             }
@@ -1028,13 +991,6 @@ public:
         return helper;
     }
 #endif
-
-    // TODO: Implement this method.
-    void recover()
-    {
-        return;
-    }
-
     void print()
     {
         Table *topTable = table.load();
@@ -1071,7 +1027,7 @@ private:
 // template <typename Key, typename Value>
 // Value ConcurrentHashMap<Key, Value>::VTOMBSTONE = new size_t();
 // template <typename Key, typename Value>
-// Value ConcurrentHashMap<Key, Value>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, 0);
+// Value ConcurrentHashMap<Key, Value>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, MigrationFlag);
 // template <typename Key, typename Value>
 // Value ConcurrentHashMap<Key, Value>::MATCH_ANY = new size_t();
 // template <typename Key, typename Value>
@@ -1087,7 +1043,7 @@ Value ConcurrentHashMap<Key, Value, Hash>::VINITIAL = ((((size_t)1 << 62) - 1) <
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::VTOMBSTONE = ((((size_t)1 << 62) - 2) << 3);
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, 0);
+Value ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, MigrationFlag);
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::MATCH_ANY = ((((size_t)1 << 62) - 3) << 3);
 template <typename Key, typename Value, class Hash>
