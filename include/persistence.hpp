@@ -30,6 +30,7 @@ const uintptr_t FLUSH_ALIGN = 64;
 
 // Base persistence functions.
 // TODO: Consider relocating these base functions to another file.
+__attribute__((unused))
 static void PERSIST(const void *addr, size_t len)
 {
 #ifdef DURABLE
@@ -45,6 +46,7 @@ static void PERSIST(const void *addr, size_t len)
 #endif
 }
 
+__attribute__((unused))
 static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
 {
 #ifdef DURABLE
@@ -59,6 +61,7 @@ static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
 #endif
 }
 
+__attribute__((unused))
 static void PERSIST_BARRIER_ONLY()
 {
 #ifdef DURABLE

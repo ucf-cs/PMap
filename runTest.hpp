@@ -41,7 +41,8 @@ TestOptions::TestOptions()
     numruns = 1;
     capacity = 16; // Actual capacity is 2 ^ capacity.
     filename = "./chashmap.dat";
-    wipeFile = true;
+    recover = true;
+    wipeFile = false;
 }
 
 // This function sets an arbitrarily-sized value in some arbitrary memory location.
@@ -100,6 +101,8 @@ static void help(const std::string &executable)
               << "-p num   number of parallel runs (default: " << tmp.numruns << ")\n"
               << "-c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
               << "-f name  name of the mmaped file (default: " << tmp.filename << ")\n"
+              << "-r bool  whether to run the recovery test or the main test (default: " << tmp.recover << ")\n"
+              << "-w bool  whether to wipe or recover the persistent file (default: " << tmp.wipeFile << ")\n"
               << "-h       displays this help message\n"
               << std::endl;
     exit(0);
@@ -111,7 +114,7 @@ int run_test(test_type *test, const TestOptions &opt)
 
     std::list<std::thread> exp_threads;
     std::vector<ThreadInfo> thread_info(opt.numthreads, ThreadInfo{});
-    container_type *contptr = new container_type(opt);
+    container_type *contptr = new container_type(opt, !opt.wipeFile);
 
     ThreadInfo *tmpThreadInfo = new ThreadInfo(contptr, 0, opt.numops, opt.numthreads);
     test->container_test_prefix(*tmpThreadInfo);
@@ -137,7 +140,6 @@ int run_test(test_type *test, const TestOptions &opt)
     time_point endtime = std::chrono::system_clock::now();
     int elapsedtime = std::chrono::duration_cast<duration_unit>(endtime - starttime).count();
 
-    __sync_synchronize();
     const int actsize = contptr->count();
     std::cout << "elapsed time = " << elapsedtime << "ms" << std::endl;
     std::cout << "container size = " << actsize << std::endl;
@@ -150,6 +152,25 @@ int run_test(test_type *test, const TestOptions &opt)
     delete tmpThreadInfo;
 
     return elapsedtime;
+}
+
+// Test to ensure that the data structure persisted to a recoverable state.
+int recovery_test(test_type *test, const TestOptions &opt)
+{
+    // Recover the container.
+    container_type *contptr = new container_type(opt, true);
+    // Container-specific consistency check.
+    if (!contptr->isConsistent())
+    {
+        printf("Container is not consistent!\n");
+    }
+    // Test-specific consistency check.
+    if (!test->consistency_check(test, opt))
+    {
+        printf("Test is not consistent!\n");
+    }
+    delete contptr;
+    return 0;
 }
 
 #endif

@@ -2,6 +2,8 @@
 #ifndef TEST_HPP
 #define TEST_HPP
 
+#include <signal.h>
+
 #include "runTest.hpp"
 
 class Test
@@ -35,6 +37,13 @@ public:
         starttime = std::chrono::system_clock::now();
         test->container_test(ti);
     }
+    // A test-specific consistency check.
+    virtual bool consistency_check(__attribute__((unused)) Test *test,
+                                   __attribute__((unused)) const TestOptions &opt)
+    {
+        printf("No consistency check defined. Assuming consistent.\n");
+        return true;
+    }
     // The number of operations that a thread will carry out
     static size_t opsPerThread(size_t numThreads, size_t totalOps, size_t threadID)
     {
@@ -53,6 +62,25 @@ public:
     static size_t opsMainLoop(size_t numops)
     {
         return numops - (numops / 10);
+    }
+
+    [[noreturn]] void simulate_catastrophic_failure()
+    {
+        if (KILL_HARD)
+            kill(getpid(), SIGKILL);
+
+        std::abort();
+    }
+
+    void timed_catastrophe(int delay)
+    {
+        while (waiting_threads.load())
+        {
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(delay));
+
+        simulate_catastrophic_failure();
     }
 };
 

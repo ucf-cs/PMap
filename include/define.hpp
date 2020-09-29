@@ -43,7 +43,9 @@ struct TestOptions
     size_t capacity; // Actual capacity is 2 ^ capacity.
     // Location and name of the persistent file used.
     std::string filename;
-    // Whether or not to wipe the file before each run.
+    // Whether to perform a recovery test or run the normal test.
+    bool recover;
+    // Whether to wipe or recover the file.
     bool wipeFile;
 
     TestOptions();
@@ -51,13 +53,14 @@ struct TestOptions
     // TODO: Print out final arguments used.
     void print()
     {
-        std::cout <<    "*** concurrent container test "
+        std::cout << "*** concurrent container test "
                   << "\n***          number of threads: " << numthreads
                   << "\n*** total number of operations: " << numops
                   << "\n***       total number of runs: " << numruns
                   << "\n***  initial capacity (base 2): " << capacity
                   << "\n***            actual capacity: " << (1 << capacity)
                   << "\n***                mapped file: " << filename
+                  << "\n***                    recover: " << recover
                   << "\n***                  wipe file: " << wipeFile
                   //<< "\n***                  test type: " << typeid(test_type).name()
                   //<< "\n***             container type: " << typeid(container_type).name()

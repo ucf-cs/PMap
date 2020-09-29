@@ -21,6 +21,8 @@ int main(int argc, char **args)
                    matchOpt1(arguments, argn, "-p", settings.numruns) ||
                    matchOpt1(arguments, argn, "-c", settings.capacity) ||
                    matchOpt1(arguments, argn, "-f", settings.filename) ||
+                   matchOpt1(arguments, argn, "-r", settings.recover) ||
+                   matchOpt1(arguments, argn, "-w", settings.wipeFile) ||
                    matchOpt0(arguments, argn, "-h", help, arguments.at(0)));
     }
 
@@ -35,6 +37,12 @@ int main(int argc, char **args)
     try
     {
         size_t total_time = 0;
+
+        // Recover before running the tests.
+        if (settings.recover)
+        {
+            recovery_test(test, settings);
+        }
 
         for (size_t i = 1; i <= settings.numruns; ++i)
         {

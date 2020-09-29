@@ -20,7 +20,7 @@
         {
             "label": "Clean",
             "type": "shell",
-            "command": "rm a.out",
+            "command": "make clean",
             "problemMatcher": []
         }
     ]
