@@ -12,6 +12,10 @@
 #include "../persistence.hpp"
 #include "../marking.hpp"
 
+thread_local size_t localThreadNum;
+thread_local size_t helps = 0;
+thread_local size_t opsDone = 0;
+
 // T: The data type being dealt with. Ideally, it should just be something word-sized.
 // NOTE: T must not use the first 3 bits, and must not be larger than an atomic word.
 // NOTE: T must be able to cast to and from a 64-bit uintptr_t.
@@ -249,7 +253,10 @@ public:
     KCASDescriptor KCASDescriptors[P];
     WordDescriptor wordDescriptors[P];
 
-    PMwCASManager()
+    // TODO: Optionally recover from file.
+    PMwCASManager(uintptr_t baseAddress = NULL,
+                  bool reconstruct = false,
+                  const char *fileName = NULL)
     {
         // P and K should always be a power of 2.
         assert((P & (P - 1)) == 0);
@@ -257,6 +264,20 @@ public:
         // These types should be lock-free.
         assert(std::atomic<T>{}.is_lock_free());
         assert(std::atomic<DescRef>{}.is_lock_free());
+
+        // Set the base address.
+        // If it's NULL, then our offsets are just raw addresses.
+        this->baseAddress = baseAddress;
+
+        // If a file name is specified, attempt to recover.
+        if (reconstruct && fileName != NULL)
+        {
+            //recover(fileName);
+            return;
+        }
+
+        // TODO: Otherwise, just map our descriptors to file.
+
         // Initialize the KCAS descriptors.
         // TODO: Change this behavior to support recovery.
         for (size_t i = 0; i < P; i++)
@@ -266,7 +287,8 @@ public:
             m.isDirty = true;
             // Initial status doesn't really matter.
             m.status = Succeeded;
-            // Though it doesn't particularly matter, we make sure all sequence numbers start at 0.
+            // We make sure all sequence numbers start at 0.
+            // This way, it starts out even.
             m.seq = 0;
 
             KCASDescriptors[i].mutables.store(m);
@@ -647,6 +669,8 @@ public:
         while (true)
         {
             // Read the value.
+            // NOTE: Don't use pcas_read here.
+            // Dirty bits are handled in our function.
             T v = address->load();
             // If it's part of an RDCSS.
             if ((uintptr_t)v & RDCSSFlag)

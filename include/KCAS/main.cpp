@@ -68,7 +68,9 @@ void performOps(int threadNum)
         for (auto &&index : indexes)
         {
             // We choose an index of the array to modify, which was selected at random.
-            words[j].address = &array[index];
+            // TODO: Bad math, either here or in our address calculations. Fix this.
+            words[j].offset = (&array[index]) - array;
+            assert((std::atomic<uintptr_t> *)(array + words[j].offset) == &array[index]);
             // Read the current value at that index.
             // If it doesn't match, the PMwCAS will fail.
             words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
@@ -117,7 +119,7 @@ int main(void)
 
     // Create a PMwCAS manager.
     // All PMwCAS operations should run through here.
-    pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>();
+    pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>((uintptr_t)array);
 
     // Ensure DescRef is word-sizes.
     assert(sizeof(PMwCASManager<uintptr_t, K, THREAD_COUNT>::DescRef) == 8);
