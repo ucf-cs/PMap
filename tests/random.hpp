@@ -79,7 +79,7 @@ namespace randomTest
                 }
             }
         }
-        void container_test_suffix(ThreadInfo &ti)
+        void container_test_suffix(__attribute__((unused)) ThreadInfo &ti)
         {
             return;
         }

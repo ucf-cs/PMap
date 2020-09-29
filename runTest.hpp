@@ -20,17 +20,19 @@
 #include "containers/ucfMap.hpp"
 
 // The container to use.
-//using container_type = ucf::container_type;
-using container_type = stl::container_type;
+using container_type = ucf::container_type;
+//using container_type = stl::container_type;
 //using container_type = pm::container_type;
 //using container_type = onefile::container_type;
 
+#include "tests/alternating.hpp"
 #include "tests/degree.hpp"
 #include "tests/random.hpp"
 #include "tests/reddit.hpp"
 
 // The test to run.
-using test_type = degreeTest::test_type;
+using test_type = alternatingTest::test_type;
+//using test_type = degreeTest::test_type;
 //using test_type = redditTest::test_type;
 //using test_type = randomTest::test_type;
 

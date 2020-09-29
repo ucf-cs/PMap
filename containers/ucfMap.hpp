@@ -56,8 +56,9 @@ namespace ucf
 
         bool isConsistent()
         {
-            // TODO: Make some sort of consistency check.
-            // Check each key and value.
+            // Consistency is already checked during recovery.
+            // Thus, we leave this empty for now.
+            return true;
         }
     };
 

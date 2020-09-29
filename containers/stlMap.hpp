@@ -65,7 +65,9 @@ namespace stl
             return t;
         }
 
-        container_type(const TestOptions &)
+        // This constructor offers no persistence.
+        // Reconstruct is unused.
+        container_type(const TestOptions &, __attribute__((unused)) bool reconstruct = false)
         {
             c = new std::map<KeyT, ValT>();
             if (c == nullptr)
@@ -73,6 +75,13 @@ namespace stl
                 throw std::runtime_error("could not allocate");
             }
             return;
+        }
+
+        bool isConsistent()
+        {
+            // This container offers no persistence.
+            // Thus, a "recovered" container is always empty.
+            return true;
         }
     };
 } // namespace stl

@@ -47,7 +47,10 @@ namespace pm
 
         ValT get(KeyT el)
         {
-            return contains(el);
+            pm::root::map_type::accessor result;
+            pop.root()->pptr->find(result, el);
+            value_type v = *result;
+            return ValT(v.second);
         }
 
         size_t count()
@@ -57,11 +60,26 @@ namespace pm
 
         ValT increment(KeyT el)
         {
-            // NOTE: Cannot actually increment.
-            return insert(el);
+            pmem::obj::transaction::run(pop,
+                                        [&]() -> void {
+                                            pm::root::map_type::accessor result;
+                                            if (pop.root()->pptr->find(result, el))
+                                            {
+                                                value_type v = *result;
+                                                pop.root()->pptr->insert_or_assign(el, v.second + 1);
+                                            }
+                                            else
+                                            {
+                                                value_type v = value_type(el, 1);
+                                                pop.root()->pptr->insert(v);
+                                            }
+                                            return;
+                                        });
+            return ValT(0);
         }
 
-        container_type(const TestOptions &opt)
+        // TODO: Make reconstruction optional.
+        container_type(const TestOptions &opt, bool reconstruct = false)
         {
             const size_t realcapacity = 1 << opt.capacity;
             const std::string realfilename = opt.filename + ".pool";
@@ -85,6 +103,12 @@ namespace pm
                 throw std::runtime_error("could not allocate");
 
             return;
+        }
+
+        bool isConsistent()
+        {
+            // NOTE: Assume it is consistent.
+            return true;
         }
     };
 } // namespace pm

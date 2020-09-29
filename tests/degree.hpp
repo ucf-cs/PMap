@@ -67,7 +67,7 @@ namespace degreeTest
         }
 
     public:
-        void container_test_prefix(ThreadInfo &ti)
+        void container_test_prefix(__attribute__((unused)) ThreadInfo &ti)
         {
             return;
         }

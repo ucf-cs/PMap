@@ -53,11 +53,23 @@ namespace onefile
 
         ValT increment(KeyT el)
         {
-            // NOTE: Cannot actually increment.
-            return insert(el);
+            PTM::template updateTx<bool>([&]() {
+                if (c->contains(el))
+                {
+                    ValT v;
+                    c->innerGet(el, v, true);
+                    return c->innerPut(el, v + 1, v, false);
+                }
+                else
+                {
+                    ValT val = 0;
+                    return c->innerPut(el, 1, val, false);
+                }
+            });
         }
 
-        container_type(const TestOptions &opt)
+        // TODO: Implement recovery?
+        container_type(const TestOptions &opt, bool reconstruct = false)
         {
             PTM::template updateTx<bool>([&]() {
                 const size_t realcapacity = 1 << opt.capacity;
@@ -69,6 +81,12 @@ namespace onefile
                 throw std::runtime_error("could not allocate");
             }
             return;
+        }
+
+        bool isConsistent()
+        {
+            // NOTE: Do nothing for now.
+            return true;
         }
     };
 } // namespace onefile
