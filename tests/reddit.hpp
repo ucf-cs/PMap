@@ -26,43 +26,23 @@ namespace redditTest
         }
         inline static void parseFile(ThreadInfo &ti, std::string filename)
         {
-            // Extra threads do nothing since we have only 4 files.
-            if (ti.num >= 4)
+            // Extra threads do nothing since we have only 1 file.
+            if (ti.num >= 1)
             {
                 return;
             }
-            std::ifstream rmat(filename);
-            if (!rmat.is_open())
+            std::ifstream reddit(filename);
+            if (!reddit.is_open())
             {
                 throw std::runtime_error("Could not open file.");
             }
             std::string line;
-            KeyT outgoing;
-            KeyT incoming;
-            size_t val;
-            while (std::getline(rmat, line))
+            uintptr_t val;
+            while (std::getline(reddit, line))
             {
                 std::stringstream ss(line);
-                size_t colIdx = 0;
-                while (ss >> val)
-                {
-                    switch (colIdx)
-                    {
-                    case 0:
-                        outgoing = val;
-                        break;
-                    case 1:
-                        incoming = val;
-                        break;
-                    default:
-                        throw std::runtime_error("Too many values found on this line.");
-                        break;
-                    }
-                    if (ss.peek() == ' ')
-                        ss.ignore();
-                    colIdx++;
-                }
-                ((container_type *)ti.container)->increment(incoming);
+                ss >> val;
+                ((container_type *)ti.container)->increment(val);
             }
         }
 
@@ -83,8 +63,7 @@ namespace redditTest
             try
             {
                 const size_t tinum = ti.num;
-                std::string str = "/home/marioman/PMap/data/rmat/edge_list_rmat_s10_" + std::to_string(tinum) + "_of_4";
-                //std::string str = "./data/rmat/smallTest";
+                std::string str = "/home/marioman/PMap/data/reddit_author_hash.uint64_t";
                 parseFile(ti, str);
 
                 ++wrid;
