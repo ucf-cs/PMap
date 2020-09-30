@@ -84,14 +84,24 @@ namespace pm
             const size_t realcapacity = 1 << opt.capacity;
             const std::string realfilename = opt.filename + ".pool";
 
-            pop = pool::open(realfilename, "cmap");
+            try
+            {
+                //pop = pool::create(realfilename, "cmap");
+                pop = pool::open(realfilename, "cmap");
+            }
+            catch (pmem::pool_error &e)
+            {
+                std::cerr << e.what() << std::endl;
+                return;
+            }
+
             auto r = pop.root();
 
             if (r->pptr == nullptr)
             {
                 pmem::obj::transaction::run(pop,
                                             [&]() -> void {
-                                                r->pptr = pmem::obj::make_persistent<root::map_type>(realcapacity);
+                                                r->pptr = pmem::obj::make_persistent<root::map_type>();
                                             });
             }
             else

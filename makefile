@@ -1,8 +1,8 @@
 
-BUILDTYPE ?= debug
+BUILDTYPE ?= release
 
 ifeq ($(BUILDTYPE),release)
-  OPTFLAG ?= -O3 -march=native
+  OPTFLAG ?= -O3 -march=native -flto
   DBGFLAG ?= -DNDEBUG=1
 endif
 
@@ -11,7 +11,7 @@ ifeq ($(BUILDTYPE),debug)
   DBGFLAG ?= -ggdb
 endif
 
-WARNFLAG ?= -Wall -Wextra -pedantic
+WARNFLAG ?= #-Wall -Wextra -pedantic
 ARCHFLAG ?= -DDEFAULT_CACHELINE_SIZE=64 # should not be needed for a c++17 compliant compiler
 
 DATAFILE ?= ./chashmap.dat #/mnt/pmem/pm1/hashtest.dat
@@ -20,7 +20,7 @@ VGFLAGS  ?= --flush-check=yes --flush-align=yes --mult-stores=yes
 CHKARGS  ?= -n 1000000 -c 20 -f $(DATAFILE) -t 48 
 
 INCLUDES := -I. -Iinclude -Icontainers -Itests -Ihashing -I/home/marioman/onefile -I/home/marioman/usr/include
-LIBS     := -L/home/marioman/local/lib -lpmemobj -L/home/marioman/usr/lib #-L/usr/lib/x86_64-linux-gnu
+LIBS     := -L/home/marioman/local/lib -L/home/marioman/usr/lib -lpmemobj #-L/usr/lib/x86_64-linux-gnu
 TARGET   := ./bin/test.out
 #HEADERS  := container-onefileMap.hpp container-pmemMap.hpp container-ucfMap.hpp container-stlMap.hpp
 
@@ -43,4 +43,4 @@ check: $(TARGET)
 
 .PHONY: clean
 clean:
-	rm -f $(TARGET) $(DATAFILE) ./data/PMDKfile.dat
+	rm -f $(TARGET) $(DATAFILE) ./data/PMDKfile.dat ./data/persistFile.bin ./data/persistFile.bin.pool

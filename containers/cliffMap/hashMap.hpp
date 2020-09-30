@@ -592,8 +592,8 @@ public:
             table->chm.slots.store(0);
             for (size_t i = 0; i < size; i++)
             {
-                Value V = ((Table *)address)->pairs[i].value.load();
-                Key K = ((Table *)address)->pairs[i].key.load();
+                Value V = table->pairs[i].value.load();
+                Key K = table->pairs[i].key.load();
 
                 // While we're at it, check for inconsistent table entries.
                 // THis is the only situation I've come up with where we could have a problem with partial persists.
@@ -603,7 +603,7 @@ public:
                     // Just make it a tombstone since we don't know what value it should have been.
                     Table::CASvalue(table, i, VINITIAL, VTOMBSTONE);
                     // Update the replaced value for subsequent use in this loop.
-                    V = ((Table *)address)->pairs[i].value.load();
+                    V = table->pairs[i].value.load();
                     // We should always succeed. We are running sequentially, after all.
                     assert(V == VTOMBSTONE);
                 }

@@ -97,7 +97,7 @@ namespace degreeTest
         }
         void container_test_suffix(ThreadInfo &ti)
         {
-            reportDegree(ti);
+            //reportDegree(ti);
             return;
         }
     };

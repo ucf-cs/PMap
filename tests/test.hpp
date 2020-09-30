@@ -41,7 +41,7 @@ public:
     virtual bool consistency_check(__attribute__((unused)) Test *test,
                                    __attribute__((unused)) const TestOptions &opt)
     {
-        printf("No consistency check defined. Assuming consistent.\n");
+        printf("No consistency check defined for this test. Assuming consistent.\n");
         return true;
     }
     // The number of operations that a thread will carry out

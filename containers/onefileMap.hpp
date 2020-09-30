@@ -53,6 +53,9 @@ namespace onefile
 
         ValT increment(KeyT el)
         {
+            return insert(el);
+            // TODO: This function seems to deadlock. Fix it.
+            ValT v = 0;
             PTM::template updateTx<bool>([&]() {
                 if (c->contains(el))
                 {
@@ -66,6 +69,7 @@ namespace onefile
                     return c->innerPut(el, 1, val, false);
                 }
             });
+            return v;
         }
 
         // TODO: Implement recovery?

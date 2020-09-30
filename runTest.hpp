@@ -14,13 +14,15 @@
 
 // Only uncomment PMEM containers when you use them.
 // Otherwise, they will try to open a PMEM file on persistent memory, even when unused.
-//#include "containers/onefileMap.hpp"
-//#include "containers/pmemMap.hpp"
+#include "containers/onefileMap.hpp"
+#include "containers/pmemMap.hpp"
 #include "containers/stlMap.hpp"
 #include "containers/ucfMap.hpp"
+//#include "containers/ucfHopscotchMap.hpp"
 
 // The container to use.
 using container_type = ucf::container_type;
+//using container_type = ucfHopscotch::container_type;
 //using container_type = stl::container_type;
 //using container_type = pm::container_type;
 //using container_type = onefile::container_type;
@@ -31,9 +33,9 @@ using container_type = ucf::container_type;
 #include "tests/reddit.hpp"
 
 // The test to run.
-using test_type = alternatingTest::test_type;
+//using test_type = alternatingTest::test_type;
 //using test_type = degreeTest::test_type;
-//using test_type = redditTest::test_type;
+using test_type = redditTest::test_type;
 //using test_type = randomTest::test_type;
 
 TestOptions::TestOptions()
@@ -116,7 +118,7 @@ int run_test(test_type *test, const TestOptions &opt)
 
     std::list<std::thread> exp_threads;
     std::vector<ThreadInfo> thread_info(opt.numthreads, ThreadInfo{});
-    container_type *contptr = new container_type(opt, !opt.wipeFile);
+    container_type *contptr = new container_type(opt, opt.recover);
 
     ThreadInfo *tmpThreadInfo = new ThreadInfo(contptr, 0, opt.numops, opt.numthreads);
     test->container_test_prefix(*tmpThreadInfo);
