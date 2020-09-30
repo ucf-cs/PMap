@@ -120,7 +120,7 @@ int main(void)
 
     // Create a PMwCAS manager.
     // All PMwCAS operations should run through here.
-    pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>((uintptr_t)array);
+    pmwcas = new PMwCASManager<uintptr_t, K, THREAD_COUNT>((uintptr_t)array, false);
 
     // Ensure DescRef is word-sizes.
     assert(sizeof(PMwCASManager<uintptr_t, K, THREAD_COUNT>::DescRef) == 8);

@@ -5,8 +5,19 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstddef>
+#include <cstring>
 #include <chrono>
 #include <utility>
+
+// mmap.
+#include <sys/mman.h>
+#include <cstdio>
+#include <cstdlib>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <ctype.h>
+#include <errno.h>
 
 #include "define.hpp"
 #include "../persistence.hpp"
@@ -158,7 +169,7 @@ public:
         {
             assert((uintptr_t)array == baseAddress);
             // NOTE: offset is in bytes. Multiply by 8 to compensate.
-            return (std::atomic<T> *)(baseAddress + offset*8);
+            return (std::atomic<T> *)(baseAddress + offset * 8);
         }
     };
     struct alignas(8) WordDescriptor : Word
@@ -256,17 +267,16 @@ public:
     // Our descriptor pools.
     // TODO: Recover these in a persistent environment.
     // This simply involes saving the pools to file in NVM, using mmap.
-    KCASDescriptor KCASDescriptors[P];
-    WordDescriptor wordDescriptors[P];
+    KCASDescriptor *KCASDescriptors;
+    WordDescriptor *wordDescriptors;
     // Our base address.
     // Add this to our offsets to find target words.
     // NOTE: May need to rethink how this is used when supporting more than one array. (ex resizing)
     uintptr_t baseAddress;
 
-    // TODO: Optionally recover from file.
     PMwCASManager(uintptr_t baseAddress = NULL,
                   bool reconstruct = false,
-                  const char *fileName = NULL)
+                  const char *fileName = "./descriptors.dat")
     {
         // P and K should always be a power of 2.
         assert((P & (P - 1)) == 0);
@@ -282,11 +292,41 @@ public:
         // If a file name is specified, attempt to recover.
         if (reconstruct && fileName != NULL)
         {
-            //recover(fileName);
+            recover(fileName);
             return;
         }
 
-        // TODO: Otherwise, just map our descriptors to file.
+        // Otherwise, just map our descriptors to file.
+        // Create and open the file.
+        int fd = open(fileName, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+        if (fd == -1)
+        {
+            // error
+            std::cerr << "Failed to create or open the file." << std::endl;
+            throw std::runtime_error("cannot create or open file");
+        }
+        // Allocate enough space for the descriptors.
+        size_t length = (sizeof(KCASDescriptor) + sizeof(WordDescriptor)) * P;
+        // Truncate will actually extend the size of the file by filling with NULL.
+        if (ftruncate(fd, length) == -1)
+        {
+            // error
+            std::cerr << "Failed to adjust file size." << std::endl;
+            throw std::runtime_error("cannot create or open file");
+        }
+        // Allocate our file.
+        void *map = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if ((intptr_t)map == -1)
+        {
+            // error
+            std::cerr << "Failed to mmap a new file. errno = "
+                      << errno << ", " << strerror(errno) << std::endl;
+            throw std::logic_error("mmap new file failed.");
+        }
+        // Assign the mapping.
+        KCASDescriptors = (KCASDescriptor *)map;
+        wordDescriptors = (WordDescriptor *)((uintptr_t)map + (sizeof(KCASDescriptor) * P));
+        assert(((uintptr_t)wordDescriptors + (sizeof(WordDescriptor) * P)) == (uintptr_t)map + length);
 
         // Initialize the KCAS descriptors.
         // TODO: Change this behavior to support recovery.
@@ -798,12 +838,111 @@ private:
                            wordDescriptors[RDCSSdesc.tid].address(baseAddress),
                            success);
     }
-    }
-
-    // TODO: Implement this.
-    // TODO: For the hash map, upon recovery, look for descriptors in the hash map and complete them.
-    void recover()
+    void recover(const char *fileName = NULL)
     {
+        // If no filename was specified, then there is nothing to recover.
+        if (fileName == NULL)
+        {
+            return;
+        }
+        // Otherwise, try to open and recover the data.
+        // Try to open an existing hash table.
+        int fd = open(fileName, O_RDWR);
+        if (fd == -1)
+        {
+            // error
+            std::cerr << "Failed to create or open the file." << std::endl;
+            throw std::runtime_error("cannot create or open file");
+        }
+        size_t length = (sizeof(KCASDescriptor) + sizeof(WordDescriptor)) * P;
+        // Map the file.
+        void *address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        if ((intptr_t)address == -1)
+        {
+            // error
+            std::cerr << "Failed to mmap the existing file. errno = "
+                      << errno << ", " << strerror(errno) << std::endl;
+            throw std::logic_error("mmap existing file failed.");
+        }
+        // Assign the mapping.
+        KCASDescriptors = (KCASDescriptor *)address;
+        wordDescriptors = (WordDescriptor *)((uintptr_t)address + sizeof(KCASDescriptor) * P);
+        assert(((uintptr_t)wordDescriptors + (sizeof(WordDescriptor) * P)) == (uintptr_t)map + length);
+
+        // Check for and finish incomplete RDCSS Descriptors.
+        for (size_t i = 0; i < P; i++)
+        {
+            // Get the target address of the RDCSS.
+            DescRef ref = pcas_read(wordDescriptors[i].address(baseAddress));
+            // If this address contains an RDCSS descriptor reference.
+            if (ref.isRDCSS && !ref.isKCAS)
+            {
+                // Try to complete it.
+                CompleteInstall(ref);
+            }
+            // This should no longer have an RDCSS descriptor.
+            assert(!((DescRef)pcas_read<T>(wordDescriptors[i].address(baseAddress))).isRDCSS);
+        }
+        // Check for and finish incomplete KCAS Descriptors.
+        for (size_t i = 0; i < P; i++)
+        {
+            // Reset odd descriptors. These were WIP and thus incomplete.
+            if (pcas_read<typename KCASDescriptor::Mutable>(&KCASDescriptors[i].mutables).seq % 2 != 0)
+            {
+                typename KCASDescriptor::Mutable m;
+                // Marked as dirty for consistency.
+                m.isDirty = true;
+                // Initial status doesn't really matter.
+                m.status = Succeeded;
+                // Reset the sequence number to 0.
+                m.seq = 0;
+
+                KCASDescriptors[i].mutables.store(m);
+                KCASDescriptors[i].count = 0;
+
+                continue;
+            }
+            // If the KCAS is incomplete.
+            if (pcas_read<typename KCASDescriptor::Mutable>(&KCASDescriptors[i].mutables).status == Undecided)
+            {
+                // Make a fake descriptor so we can run PMwCAS on it.
+                DescRef desc;
+                desc.tid = i;
+                desc.seq = pcas_read<typename KCASDescriptor::Mutable>(&KCASDescriptors[i].mutables).seq;
+                desc.isRDCSS = false;
+                desc.isKCAS = true;
+                desc.isDirty = false;
+                // Try to complete it.
+                PMwCAS(desc);
+            }
+            // Make sure none of the words within the KCAS still have descriptors placed.
+            for (size_t i = 0; i < KCASDescriptors[i].count; i++)
+            {
+                // Get the memory location of the word.
+                DescRef ref = pcas_read(KCASDescriptors[i].words[i].address(baseAddress));
+
+                // Check for descriptors.
+
+                // There should be no descriptors.
+                // NOTE: Both could be marked if this is a MigrationFlag.
+                assert((!ref.isKCAS && !ref.isRDCSS) ||
+                       (ref.isKCAS && ref.isRDCSS));
+
+                // If this address contains an RDCSS descriptor reference.
+                if (ref.isRDCSS && !ref.isKCAS)
+                {
+                    // Try to complete it.
+                    CompleteInstall(ref);
+                    // Update the contents.
+                    ref = pcas_read(KCASDescriptors[i].words[i].address(baseAddress));
+                }
+
+                // There should be no descriptors.
+                assert(!ref.isKCAS && !ref.isRDCSS);
+            }
+        }
+        // NOTE: Ideally, one would check every possible KCAS location to confirm that no descriptors are left over at this stage.
+        return;
     }
 };
 

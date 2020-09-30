@@ -15,6 +15,7 @@ inline const size_t NUM_OPS = 10000;
 typedef std::chrono::nanoseconds TIME_UNIT;
 
 // A test array. We attempt to perform PMwCAS on the words contained within this array.
+// TODO: To test recovery, we must persist the array itself.
 alignas(8) std::atomic<uintptr_t> array[ARRAY_SIZE];
 
 #endif
