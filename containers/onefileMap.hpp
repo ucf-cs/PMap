@@ -72,7 +72,7 @@ namespace onefile
             return v;
         }
 
-        // TODO: Implement recovery?
+        // TODO: Implement explicit recovery?
         container_type(const TestOptions &opt, bool reconstruct = false)
         {
             PTM::template updateTx<bool>([&]() {

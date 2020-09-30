@@ -60,6 +60,8 @@ namespace pm
 
         ValT increment(KeyT el)
         {
+            // TODO: Having trouble making the transaction work.
+            return insert((ValT)el);
             pmem::obj::transaction::run(pop,
                                         [&]() -> void {
                                             pm::root::map_type::accessor result;
@@ -75,7 +77,7 @@ namespace pm
                                             }
                                             return;
                                         });
-            return ValT(0);
+            return (ValT)el;
         }
 
         // TODO: Make reconstruction optional.
