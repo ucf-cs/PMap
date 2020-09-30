@@ -146,13 +146,19 @@ public:
     // Each Word Descriptor has a word, plus extra auxiliary information, such as the sequence number.
     struct alignas(8) Word
     {
-        std::atomic<T> *address;
+        uintptr_t offset;
         T oldVal;
         T newVal;
         // Used for sorting Words.
         bool operator<(const Word &word) const
         {
-            return ((uintptr_t)address < (uintptr_t)word.address);
+            return ((uintptr_t)offset < (uintptr_t)word.offset);
+        }
+        std::atomic<T> *address(uintptr_t baseAddress)
+        {
+            assert((uintptr_t)array == baseAddress);
+            // NOTE: offset is in bytes. Multiply by 8 to compensate.
+            return (std::atomic<T> *)(baseAddress + offset*8);
         }
     };
     struct alignas(8) WordDescriptor : Word
@@ -252,6 +258,10 @@ public:
     // This simply involes saving the pools to file in NVM, using mmap.
     KCASDescriptor KCASDescriptors[P];
     WordDescriptor wordDescriptors[P];
+    // Our base address.
+    // Add this to our offsets to find target words.
+    // NOTE: May need to rethink how this is used when supporting more than one array. (ex resizing)
+    uintptr_t baseAddress;
 
     // TODO: Optionally recover from file.
     PMwCASManager(uintptr_t baseAddress = NULL,
@@ -346,7 +356,7 @@ public:
         // Make sure the words are sorted correctly.
         for (size_t i = 0; i < size - 1; i++)
         {
-            assert(((uintptr_t)words[i].address) < ((uintptr_t)words[i + 1].address));
+            assert(words[i].address(baseAddress) < words[i + 1].address(baseAddress));
         }
 
         // Construct the new descriptor.
@@ -361,7 +371,7 @@ public:
         assert(0 < desc->count && desc->count <= K);
         for (size_t j = 0; j < desc->count; j++)
         {
-            assert(desc->words[j].address != NULL);
+            assert(desc->words[j].address(baseAddress) != NULL);
         }
 
         // Flush the descriptor.
@@ -403,7 +413,8 @@ public:
         // Now other threads cannot read this descriptor that is under construction.
 
         // Construct the new descriptor.
-        desc->address = word.address;
+        // We assume offsets have been properly computed before being passed in.
+        desc->offset = word.offset;
         desc->oldVal = word.oldVal;
         desc->newVal = word.newVal;
 
@@ -412,7 +423,7 @@ public:
         desc->KCAStid = helpingThreadNum;
 
         // Validate the descriptor.
-        assert(desc->address != NULL);
+        assert(desc->address(baseAddress) != NULL);
 
         // Flush the descriptor.
         PERSIST_FLUSH_ONLY(desc, sizeof(WordDescriptor));
@@ -508,7 +519,7 @@ public:
         {
             for (size_t i = 0; i < KCASDescriptors[desc.tid].count; i++)
             {
-                if (KCASDescriptors[desc.tid].words[i].address == addr)
+                if (KCASDescriptors[desc.tid].words[i].address(baseAddress) == addr)
                 {
                     // Start on the next word.
                     start = i + 1;
@@ -548,7 +559,7 @@ public:
                 if (((DescRef)rval).isDirty)
                 {
                     // Persist it.
-                    persist(KCASDescriptors[desc.tid].words[i].address, rval);
+                    persist(KCASDescriptors[desc.tid].words[i].address(baseAddress), rval);
                 }
                 // If we clash with the KCAS descriptor we wanted to place anyway (via helping).
                 if (((DescRef)rval).tid == desc.tid &&
@@ -558,7 +569,7 @@ public:
                     continue;
                 }
                 // We clashed with a PMwCAS. Help complete it.
-                PMwCAS((DescRef)rval, KCASDescriptors[desc.tid].words[i].address);
+                PMwCAS((DescRef)rval, KCASDescriptors[desc.tid].words[i].address(baseAddress));
                 // Now that the obstruction is removed, try again.
                 goto retry;
             }
@@ -584,7 +595,7 @@ public:
                 // This shouldn't be a problem. We know we succeeded.
                 // At worst, this is persisting subsequent operations.
                 // The conditional nature of pcas_read should make it low-overhead though.
-                pcas_read(KCASDescriptors[desc.tid].words[i].address);
+                pcas_read(KCASDescriptors[desc.tid].words[i].address(baseAddress));
             }
         }
 
@@ -626,7 +637,7 @@ public:
             T rval = (T)expected;
             // Replace it with a value.
             // CASField will automatically mark it as dirty.
-            CAS1 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address, success);
+            CAS1 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address(baseAddress), success);
             // Descriptor changed. Work must be complete.
             if (!success)
             {
@@ -638,7 +649,7 @@ public:
             {
                 // Try again, assuming that the descriptor *is* persisted.
                 rval = (T)((uintptr_t)expected & ~DirtyFlag);
-                CAS2 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address, success);
+                CAS2 = CASField<T>(desc, rval, v, KCASDescriptors[desc.tid].words[i].address(baseAddress), success);
                 // Descriptor changed. Work must be complete.
                 if (!success)
                 {
@@ -646,7 +657,7 @@ public:
                 }
             }
             // Persist any change that occurs.
-            persist(KCASDescriptors[desc.tid].words[i].address, v);
+            persist(KCASDescriptors[desc.tid].words[i].address(baseAddress), v);
 
             // DEBUG: Counters
             if (desc.tid != localThreadNum && (CAS1 || CAS2))
@@ -716,7 +727,7 @@ private:
             // This will be replaced with whatever was actually in the address field when we did the CAS.
             val = oldVal;
             // Replace with an RDCSS Descriptor.
-            bool CAS = CASField<T>(desc, val, (T)desc, wordDescriptors[desc.tid].address, success);
+            bool CAS = CASField<T>(desc, val, (T)desc, wordDescriptors[desc.tid].address(baseAddress), success);
             // One of these cases will always be true.
             assert((CAS && (val == oldVal)) ||
                    (!CAS && (val != oldVal)) ||
@@ -779,8 +790,14 @@ private:
         T expected = (T)RDCSSdesc;
         // This should be always set already. Check to make sure.
         assert(((uintptr_t)expected & RDCSSFlag) != 0);
+        assert(((DescRef)expected).isRDCSS);
         T oldVal = wordDescriptors[RDCSSdesc.tid].oldVal;
-        return CASField<T>(RDCSSdesc, expected, u ? (T)KCASDescDummy : oldVal, wordDescriptors[RDCSSdesc.tid].address, success);
+        return CASField<T>(RDCSSdesc,
+                           expected,
+                           u ? (T)KCASDescDummy : oldVal,
+                           wordDescriptors[RDCSSdesc.tid].address(baseAddress),
+                           success);
+    }
     }
 
     // TODO: Implement this.

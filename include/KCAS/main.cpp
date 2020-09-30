@@ -71,6 +71,7 @@ void performOps(int threadNum)
             // TODO: Bad math, either here or in our address calculations. Fix this.
             words[j].offset = (&array[index]) - array;
             assert((std::atomic<uintptr_t> *)(array + words[j].offset) == &array[index]);
+            assert(words[j].address((uintptr_t)array) == &array[index]);
             // Read the current value at that index.
             // If it doesn't match, the PMwCAS will fail.
             words[j].oldVal = pmwcas->PMwCASRead(&array[index]);
