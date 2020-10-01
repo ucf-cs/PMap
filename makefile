@@ -11,7 +11,7 @@ ifeq ($(BUILDTYPE),debug)
   DBGFLAG ?= -ggdb
 endif
 
-WARNFLAG ?= #-Wall -Wextra -pedantic
+WARNFLAG ?= #-Wall -Wextra -pedantic -Wl,--verbose
 ARCHFLAG ?= -DDEFAULT_CACHELINE_SIZE=64 # should not be needed for a c++17 compliant compiler
 
 DATAFILE ?= ./chashmap.dat #/mnt/pmem/pm1/hashtest.dat

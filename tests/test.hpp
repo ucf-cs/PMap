@@ -33,6 +33,7 @@ public:
     // Typically includes container_test, but can have more if needed.
     static void ptest(Test *test, ThreadInfo &ti, time_point &starttime)
     {
+        localThreadNum = ti.num;
         test->sync_start();
         starttime = std::chrono::system_clock::now();
         test->container_test(ti);

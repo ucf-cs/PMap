@@ -658,7 +658,7 @@ public:
             }
             // Persist all keys and values.
             // Everything else can be inferred upon recovery.
-            PERSIST(pairs, sizeof(KVpair *) * size);
+            PERSIST(pairs, sizeof(KVpair) * size);
             // Allocate our table.
             // We pass in the location of our KV pairs to assign them to the structure.
             // We pass in the size of the table to assign the length.

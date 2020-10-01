@@ -35,8 +35,8 @@ using container_type = ucf::container_type;
 // The test to run.
 //using test_type = alternatingTest::test_type;
 //using test_type = degreeTest::test_type;
-using test_type = redditTest::test_type;
-//using test_type = randomTest::test_type;
+//using test_type = redditTest::test_type;
+using test_type = randomTest::test_type;
 
 TestOptions::TestOptions()
 {

@@ -29,6 +29,8 @@ static constexpr size_t CACHELINESZ = DEFAULT_CACHELINE_SIZE;
 static constexpr bool KILL_HARD = true;
 static constexpr bool ALWAYS_RUN_CONSISTENCY_CHECKS = false;
 
+thread_local size_t localThreadNum;
+
 // Test options can be overridden by command line.
 // The test itself has final say in which parameters are used.
 struct TestOptions

@@ -23,7 +23,6 @@
 #include "../persistence.hpp"
 #include "../marking.hpp"
 
-thread_local size_t localThreadNum;
 thread_local size_t helps = 0;
 thread_local size_t opsDone = 0;
 
@@ -752,6 +751,56 @@ public:
             return v;
         }
     }
+    // This CAS is KCAS-aware.
+    // Use it on any memory location that could be affected by a KCAS.
+    bool CAS(std::atomic<T> *address, T &oldVal, T newVal)
+    {
+        T oldValCopy = oldVal;
+        // Keep retrying until we get a definitive success or failure.
+        while (true)
+        {
+            // Always reset the old value.
+            // We don't want to CAS with some different-than-expected value.
+            oldVal = oldValCopy;
+
+            // Try CAS.
+            if (pcas<T>(address, oldVal, newVal))
+            {
+                return true;
+            }
+
+            // If we failed, but weren't obstructed, then the CAS failed.
+            if (((uintptr_t)oldVal & RDCSSFlag) == 0 &&
+                ((uintptr_t)oldVal & PMwCASFlag) == 0 &&
+                ((uintptr_t)oldVal & DirtyFlag) == 0)
+            {
+                return false;
+            }
+            // Otherwise, resolve the conflict and try again.
+
+            // If it's part of an RDCSS.
+            if ((uintptr_t)oldVal & RDCSSFlag)
+            {
+                assert(((DescRef)oldVal).tid != localThreadNum);
+                // Finish the RDCSS.
+                CompleteInstall((DescRef)oldVal);
+            }
+            // If the value has not been persisted.
+            if ((uintptr_t)oldVal & DirtyFlag)
+            {
+                // Persist it.
+                persist(address, oldVal);
+                // And remove that mark.
+                oldVal = (uintptr_t)oldVal & ~DirtyFlag;
+            }
+            // If the value is part of a PMwCAS.
+            if ((uintptr_t)oldVal & PMwCASFlag)
+            {
+                // Help complete the KCAS.
+                PMwCAS((DescRef)oldVal);
+            }
+        }
+    }
 
 private:
     // Use RDCSS to replace a value with a descriptor.
@@ -867,7 +916,7 @@ private:
         // Assign the mapping.
         KCASDescriptors = (KCASDescriptor *)address;
         wordDescriptors = (WordDescriptor *)((uintptr_t)address + sizeof(KCASDescriptor) * P);
-        assert(((uintptr_t)wordDescriptors + (sizeof(WordDescriptor) * P)) == (uintptr_t)map + length);
+        assert(((uintptr_t)wordDescriptors + (sizeof(WordDescriptor) * P)) == (uintptr_t)address + length);
 
         // Check for and finish incomplete RDCSS Descriptors.
         for (size_t i = 0; i < P; i++)
