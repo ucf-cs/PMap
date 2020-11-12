@@ -14,18 +14,20 @@
 
 // Only uncomment PMEM containers when you use them.
 // Otherwise, they will try to open a PMEM file on persistent memory, even when unused.
-#include "containers/onefileMap.hpp"
-#include "containers/pmemMap.hpp"
+//#include "containers/onefileMap.hpp"
+//#include "containers/pmemMap.hpp"
 #include "containers/stlMap.hpp"
 #include "containers/ucfMap.hpp"
 //#include "containers/ucfHopscotchMap.hpp"
+#include "containers/levelMap.hpp"
 
 // The container to use.
-using container_type = ucf::container_type;
+//using container_type = ucf::container_type;
 //using container_type = ucfHopscotch::container_type;
 //using container_type = stl::container_type;
 //using container_type = pm::container_type;
 //using container_type = onefile::container_type;
+using container_type = clevel::container_type;
 
 #include "tests/alternating.hpp"
 #include "tests/degree.hpp"
