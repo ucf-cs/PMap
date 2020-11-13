@@ -98,7 +98,7 @@ namespace clevel
         container_type(const TestOptions &opt, bool reconstruct = false)
         {
             const size_t realcapacity = 1 << opt.capacity;
-            const std::string realfilename = opt.filename + ".pool";
+            const std::string realfilename = opt.filename;
             const char *path = realfilename.c_str();
 
             if (!reconstruct && access(path, F_OK) != 0)

@@ -16,7 +16,7 @@
 // Otherwise, they will try to open a PMEM file on persistent memory, even when unused.
 //#include "containers/onefileMap.hpp"
 //#include "containers/pmemMap.hpp"
-#include "containers/stlMap.hpp"
+//#include "containers/stlMap.hpp"
 #include "containers/ucfMap.hpp"
 //#include "containers/ucfHopscotchMap.hpp"
 #include "containers/levelMap.hpp"

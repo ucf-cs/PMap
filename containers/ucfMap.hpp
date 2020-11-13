@@ -47,8 +47,8 @@ namespace ucf
         container_type(const TestOptions &opt, bool reconstruct = false)
         {
             const size_t realcapacity = 1 << opt.capacity;
-            const char *fn = opt.filename.c_str();
-            c = new ConcurrentHashMap<KeyT, ValT>(fn, realcapacity, reconstruct);
+            const char *path = opt.filename.c_str();
+            c = new ConcurrentHashMap<KeyT, ValT>(path, realcapacity, reconstruct);
             if (c == nullptr)
                 throw std::runtime_error("could not allocate");
             return;

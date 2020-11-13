@@ -39,8 +39,7 @@ valcheck: $(TARGET)
 .PHONY: check
 check: $(TARGET)
 	$(TARGET) $(CHKARGS)
-#rm -f $(DATAFILE) PMDKfile.dat
 
 .PHONY: clean
 clean:
-	rm -f $(TARGET) $(DATAFILE) ./data/PMDKfile.dat ./data/persistFile.bin ./data/persistFile.bin.pool
+	rm -f $(TARGET) $(DATAFILE) /mnt/pmem/pm1/PMDKfile.dat /mnt/pmem/pm1/persistFile.bin

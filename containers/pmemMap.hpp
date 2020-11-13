@@ -84,17 +84,34 @@ namespace pm
         container_type(const TestOptions &opt, bool reconstruct = false)
         {
             const size_t realcapacity = 1 << opt.capacity;
-            const std::string realfilename = opt.filename + ".pool";
+            const std::string realfilename = opt.filename;
+            const char *path = realfilename.c_str();
 
-            try
+            if (!reconstruct && access(path, F_OK) != 0)
             {
-                //pop = pool::create(realfilename, "cmap");
-                pop = pool::open(realfilename, "cmap");
+                pop = pmem::obj::pool<root>::create(path, "clevel_hash",
+                                                    PMEMOBJ_MIN_POOL * 20,
+                                                    S_IWUSR | S_IRUSR);
+                auto proot = pop.root();
+
+                pmem::obj::transaction::manual tx(pop);
+
+                proot->cons = pmem::obj::make_persistent<root::map_type>();
+                proot->cons->set_thread_num(1);
+
+                pmem::obj::transaction::commit();
             }
-            catch (pmem::pool_error &e)
+            else
             {
-                std::cerr << e.what() << std::endl;
-                return;
+                try
+                {
+                    pop = pmem::obj::pool<root>::open(realfilename, "clevel_hash");
+                }
+                catch (pmem::pool_error &e)
+                {
+                    std::cerr << e.what() << std::endl;
+                    return;
+                }
             }
 
             auto r = pop.root();
