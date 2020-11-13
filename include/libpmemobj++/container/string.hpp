@@ -1,5 +1,5 @@
 /*
- * Copyright 2018, Intel Corporation
+ * Copyright 2019, Intel Corporation
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -32,16 +32,27 @@
 
 /**
  * @file
- * Auto-generated file containing source version
+ * String typedefs for common character types.
  */
 
-#ifndef LIBPMEMOBJ_CPP_VERSION_HPP
-#define LIBPMEMOBJ_CPP_VERSION_HPP
+#ifndef LIBPMEMOBJ_CPP_STRING_HPP
+#define LIBPMEMOBJ_CPP_STRING_HPP
 
-#define LIBPMEMOBJ_CPP_VERSION_MAJOR 1
-#define LIBPMEMOBJ_CPP_VERSION_MINOR 9
-#define LIBPMEMOBJ_CPP_VERSION_PATCH 0
+#include <libpmemobj++/container/basic_string.hpp>
 
-#define LIBPMEMOBJ_CPP_VERSION "1.9"
+namespace pmem
+{
 
-#endif /* LIBPMEMOBJ_CPP_VERSION_HPP */
+namespace obj
+{
+
+using string = basic_string<char>;
+using wstring = basic_string<wchar_t>;
+using u16string = basic_string<char16_t>;
+using u32string = basic_string<char32_t>;
+
+} /* namespace obj */
+
+} /* namespace pmem */
+
+#endif /* LIBPMEMOBJ_CPP_STRING_HPP */

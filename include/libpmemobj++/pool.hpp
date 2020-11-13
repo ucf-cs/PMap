@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2019, Intel Corporation
+ * Copyright 2016-2020, Intel Corporation
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -39,13 +39,21 @@
 #define LIBPMEMOBJ_CPP_POOL_HPP
 
 #include <cstddef>
+#include <functional>
+#include <mutex>
 #include <string>
 #include <sys/stat.h>
+#include <typeindex>
+#include <unordered_map>
+#include <vector>
 
 #include <libpmemobj++/detail/common.hpp>
 #include <libpmemobj++/detail/ctl.hpp>
+#include <libpmemobj++/detail/pool_data.hpp>
 #include <libpmemobj++/p.hpp>
+#include <libpmemobj++/persistent_ptr_base.hpp>
 #include <libpmemobj++/pexceptions.hpp>
+#include <libpmemobj/atomic_base.h>
 #include <libpmemobj/pool_base.h>
 
 namespace pmem
@@ -133,6 +141,8 @@ public:
 			throw pmem::pool_error("Failed opening pool")
 				.with_pmemobj_errormsg();
 
+		pmemobj_set_user_data(pop, new detail::pool_data);
+
 		return pool_base(pop);
 	}
 
@@ -166,6 +176,8 @@ public:
 		if (pop == nullptr)
 			throw pmem::pool_error("Failed creating pool")
 				.with_pmemobj_errormsg();
+
+		pmemobj_set_user_data(pop, new detail::pool_data);
 
 		return pool_base(pop);
 	}
@@ -212,6 +224,8 @@ public:
 			throw pmem::pool_error("Failed opening pool")
 				.with_pmemobj_errormsg();
 
+		pmemobj_set_user_data(pop, new detail::pool_data);
+
 		return pool_base(pop);
 	}
 
@@ -241,6 +255,8 @@ public:
 		if (pop == nullptr)
 			throw pmem::pool_error("Failed creating pool")
 				.with_pmemobj_errormsg();
+
+		pmemobj_set_user_data(pop, new detail::pool_data);
 
 		return pool_base(pop);
 	}
@@ -274,6 +290,14 @@ public:
 		if (this->pop == nullptr)
 			throw std::logic_error("Pool already closed");
 
+		auto *user_data = static_cast<detail::pool_data *>(
+			pmemobj_get_user_data(this->pop));
+
+		if (user_data->initialized.load())
+			user_data->cleanup();
+
+		delete user_data;
+
 		pmemobj_close(this->pop);
 		this->pop = nullptr;
 	}
@@ -303,7 +327,8 @@ public:
 	}
 
 	/**
-	 * Performs persist operation on a given persistent object.
+	 * Performs persist operation on a given persistent pointer.
+	 * Persist is not performed on the object referenced by this pointer.
 	 *
 	 * @param[in] ptr Persistent pointer to object
 	 */
@@ -410,6 +435,33 @@ public:
 		return pool_base::handle();
 	}
 
+	/**
+	 * Starts defragmentation using selected pointers within this pool.
+	 *
+	 * @param[in] ptrv pointer to contiguous space containing
+	 *	persistent_ptr's for defrag.
+	 * @param[in] oidcnt number of persistent_ptr's passed (in ptrv).
+	 * @return result struct containing a number of relocated and total
+	 *	processed objects.
+	 *
+	 * @throw pmem::defrag_error when a failure during defragmentation
+	 *	occurs. Even if this error is thrown, some of the objects could
+	 *	have been relocated, see defrag_error.result for summary stats.
+	 */
+	pobj_defrag_result
+	defrag(persistent_ptr_base **ptrv, size_t oidcnt)
+	{
+		pobj_defrag_result result;
+		int ret = pmemobj_defrag(this->pop, (PMEMoid **)ptrv, oidcnt,
+					 &result);
+
+		if (ret != 0)
+			throw defrag_error(result, "Defragmentation failed")
+				.with_pmemobj_errormsg();
+
+		return result;
+	}
+
 protected:
 	/* The pool opaque handle */
 	PMEMobjpool *pop;
@@ -430,6 +482,10 @@ protected:
  * for operations on pmemobj pools. The template parameter defines the
  * type of the root object within the pool. The typical usage example would be:
  * @snippet doc_snippets/pool.cpp pool_example
+ *
+ * This API should not be mixed with C API. For example explicitly calling
+ * pmemobj_set_user_data(pop) on pool which is handled by C++ pool object
+ * is undefined behaviour.
  */
 template <typename T>
 class pool : public pool_base {
@@ -486,7 +542,7 @@ public:
 	 * @returns variable representing internal state
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -504,7 +560,7 @@ public:
 	 * @returns copy of arg, possibly modified by query
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -522,7 +578,7 @@ public:
 	 * @returns copy of arg, possibly modified by query
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -540,7 +596,7 @@ public:
 	 * @returns variable representing internal state
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -558,7 +614,7 @@ public:
 	 * @returns copy of arg, possibly modified by query
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -576,7 +632,7 @@ public:
 	 * @returns copy of arg, possibly modified by query
 	 *
 	 * For more details, see:
-	 * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+	 * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
 	 */
 	template <typename M>
 	M
@@ -735,7 +791,7 @@ public:
  * @returns variable representing internal state
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T
@@ -753,7 +809,7 @@ ctl_get(const std::string &name)
  * @returns copy of arg, possibly modified by query
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T
@@ -771,7 +827,7 @@ ctl_set(const std::string &name, T arg)
  * @returns copy of arg, possibly modified by query
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T
@@ -789,7 +845,7 @@ ctl_exec(const std::string &name, T arg)
  * @returns variable representing internal state
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T
@@ -807,7 +863,7 @@ ctl_get(const std::wstring &name)
  * @returns copy of arg, possibly modified by query
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T
@@ -825,7 +881,7 @@ ctl_set(const std::wstring &name, T arg)
  * @returns copy of arg, possibly modified by query
  *
  * For more details, see:
- * http://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
+ * https://pmem.io/pmdk/manpages/linux/master/libpmemobj/pmemobj_ctl_get.3
  */
 template <typename T>
 T

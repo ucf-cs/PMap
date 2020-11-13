@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2019, Intel Corporation
+ * Copyright 2016-2020, Intel Corporation
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -42,6 +42,11 @@
 #include <libpmemobj/tx_base.h>
 #include <string>
 #include <typeinfo>
+
+#if _MSC_VER
+#include <intrin.h>
+#include <windows.h>
+#endif
 
 #if defined(__GNUC__) || defined(__clang__)
 #define POBJ_CPP_DEPRECATED __attribute__((deprecated))
@@ -111,15 +116,44 @@
 	std::is_trivially_copyable<T>::value
 #endif
 
+/*! \namespace pmem
+ * \brief Persistent memory namespace.
+ *
+ * It is a common namespace for all persistent memory C++ libraries
+ * For more information about pmem goto: https://pmem.io
+ */
+
 namespace pmem
 {
-
+/*! \namespace pmem::obj
+ * \brief Main libpmemobj namespace.
+ *
+ * It contains all libpmemobj's public types, enums, classes with their
+ * functions and members. It is located within pmem namespace.
+ */
 namespace obj
 {
 template <typename T>
 class persistent_ptr;
+
+/*! \namespace pmem::obj::experimental
+ * \brief Experimental implementations.
+ *
+ * It contains implementations, which are not yet ready to be used in
+ * production. They may be not finished, not fully tested or still in
+ * discussion. It is located within pmem::obj namespace.
+ */
+namespace experimental
+{
+}
 }
 
+/*! \namespace pmem::detail
+ * \brief Implementation details.
+ *
+ * It contains libpmemobj's implementation details, not needed in public
+ * headers. It is located within pmem namespace.
+ */
 namespace detail
 {
 
@@ -132,10 +166,12 @@ namespace detail
  *
  * @param[in] that pointer to the first object being added to the transaction.
  * @param[in] count number of elements to be added to the transaction.
+ * @param[in] flags is a bitmask of values which are described in libpmemobj
+ * manpage (pmemobj_tx_xadd_range method)
  */
 template <typename T>
 inline void
-conditional_add_to_tx(const T *that, std::size_t count = 1)
+conditional_add_to_tx(const T *that, std::size_t count = 1, uint64_t flags = 0)
 {
 	if (count == 0)
 		return;
@@ -147,7 +183,7 @@ conditional_add_to_tx(const T *that, std::size_t count = 1)
 	if (!pmemobj_pool_by_ptr(that))
 		return;
 
-	if (pmemobj_tx_add_range_direct(that, sizeof(*that) * count)) {
+	if (pmemobj_tx_xadd_range_direct(that, sizeof(*that) * count, flags)) {
 		if (errno == ENOMEM)
 			throw pmem::transaction_out_of_memory(
 				"Could not add object(s) to the transaction.")
@@ -201,6 +237,42 @@ next_pow_2(uint32_t v)
 	++v;
 	return v + (v == 0);
 }
+
+#if _MSC_VER
+static inline int
+Log2(uint64_t x)
+{
+	unsigned long j;
+	_BitScanReverse64(&j, x);
+	return static_cast<int>(j);
+}
+#elif __GNUC__ || __clang__
+static inline int
+Log2(uint64_t x)
+{
+	// __builtin_clz builtin count _number_ of leading zeroes
+	return 8 * int(sizeof(x)) - __builtin_clzll(x) - 1;
+}
+#else
+static inline int
+Log2(uint64_t x)
+{
+	x |= (x >> 1);
+	x |= (x >> 2);
+	x |= (x >> 4);
+	x |= (x >> 8);
+	x |= (x >> 16);
+	x |= (x >> 32);
+
+	static const int table[64] = {
+		0,  58, 1,  59, 47, 53, 2,  60, 39, 48, 27, 54, 33, 42, 3,  61,
+		51, 37, 40, 49, 18, 28, 20, 55, 30, 34, 11, 43, 14, 22, 4,  62,
+		57, 46, 52, 38, 26, 32, 41, 50, 36, 17, 19, 29, 10, 13, 21, 56,
+		45, 25, 31, 35, 16, 9,	12, 44, 24, 15, 8,  23, 7,  6,	5,  63};
+
+	return table[(x * 0x03f6eaf2cd271461) >> 58];
+}
+#endif
 
 } /* namespace detail */
 
