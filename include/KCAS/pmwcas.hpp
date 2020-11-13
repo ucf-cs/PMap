@@ -301,7 +301,7 @@ public:
         if (fd == -1)
         {
             // error
-            std::cerr << "Failed to create or open the file." << std::endl;
+            std::cerr << "Failed to create or open the PMwCAS file." << std::endl;
             throw std::runtime_error("cannot create or open file");
         }
         // Allocate enough space for the descriptors.
@@ -900,7 +900,7 @@ private:
         if (fd == -1)
         {
             // error
-            std::cerr << "Failed to create or open the file." << std::endl;
+            std::cerr << "Failed to create or open the PMwCAS file." << std::endl;
             throw std::runtime_error("cannot create or open file");
         }
         size_t length = (sizeof(KCASDescriptor) + sizeof(WordDescriptor)) * P;

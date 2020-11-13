@@ -46,7 +46,7 @@ TestOptions::TestOptions()
     numops = 40;
     numruns = 1;
     capacity = 16; // Actual capacity is 2 ^ capacity.
-    filename = "./chashmap.dat";
+    filename = "/mnt/pmem/pm1/persist.bin";
     recover = true;
     wipeFile = false;
 }

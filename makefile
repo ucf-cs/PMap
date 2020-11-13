@@ -42,4 +42,4 @@ check: $(TARGET)
 
 .PHONY: clean
 clean:
-	rm -f $(TARGET) $(DATAFILE) /mnt/pmem/pm1/PMDKfile.dat /mnt/pmem/pm1/persistFile.bin
+	rm -f $(TARGET) $(DATAFILE) /mnt/pmem/pm1/PMDKfile.dat /mnt/pmem/pm1/persistFile.bin /mnt/pmem/pm1/persist.bin //mnt/pmem/pm1/tables/*
