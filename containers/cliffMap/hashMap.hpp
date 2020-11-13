@@ -1,7 +1,7 @@
 // Uses resizing from "A Lock-Free Wait-Free Hash Table"
 // Additional info: http://concurrencyfreaks.blogspot.com/2014/08/a-lock-free-hash-table-by-cliff-click.html
 
-// TODO: Uses persistence from PMwCAS, modified to support non-persitent data structures: https://github.com/Microsoft/pmwcas
+// Uses persistence from PMwCAS, modified to support non-persitent data structures: https://github.com/Microsoft/pmwcas
 // Potentially enhanced using ideas from Reuse, Don't Recycle: https://drops.dagstuhl.de/opus/volltexte/2017/8009/pdf/LIPIcs-DISC-2017-4.pdf
 // NOTE: Must run ./configure in the glog folder to build theirs successfully.
 // NOTE: Reserves 3 bits to use PMwCAS. Leaves no spare bits.
@@ -34,6 +34,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <iostream>
 #include <utility>
 
@@ -58,9 +59,8 @@
 
 // These are used to enable and disable different variants of our design.
 // TODO: Debug resizing.
-//#define RESIZE
+#define RESIZE
 
-// TODO: Will limit the neighborhood distance in hopscotch hashing instead.
 inline const size_t REPROBE_LIMIT = 10;
 
 template <class Key, class Value, class Hash = std::hash<Key>>
@@ -75,7 +75,7 @@ class ConcurrentHashMap
     static Value MATCH_ANY;
     // Wildcard match old.
     static Value NO_MATCH_OLD;
-    // Tombstone. Reinsertion is supported, but the key slot is permanently claimed once set (unless relocated by hopscotch hashing?)
+    // Tombstone. Reinsertion is supported, but the key slot is permanently claimed once set.
     static Value VTOMBSTONE;
     // Tombstone used to represent emptied slots.
     static Key KTOMBSTONE;
@@ -84,57 +84,27 @@ class ConcurrentHashMap
 
     // Heuristics for resizing.
     // Consider a reprobes heuristic, or some alternative, to indicate when to resize and gather statistics on key distribution.
-    // TODO: Reprobes are a bit different with hopscotch hashing.
     static size_t reprobeLimit(size_t len)
     {
         return REPROBE_LIMIT + (len >> 2);
     }
 
 public:
-    // A key value pair.
+    // A key-value pair.
     // Using this struct enables adjacent placement of the keys and values in memory.
     typedef struct KVpair
     {
         std::atomic<Key> key;
         std::atomic<Value> value;
     } KVpair;
-    // A single table.
-    // Multiple tables can exist at a time during resizing.
+    // A table type.
+    // NOTE: Multiple tables can exist at a time during resizing.
     class Table
     {
     public:
         // The hash map control structure.
         class CHM
         {
-            // The number of active resizers.
-            // We cap this to prevent too many threads from all allocating replacement tables at once.
-            std::atomic<size_t> resizersCount;
-
-            size_t highestBit(size_t val)
-            {
-                // Subtract 1 so the rightmost position is 0 instead of 1.
-                return (sizeof(val) * 8) - __builtin_clz(val | 1) - 1;
-
-                // Slower alternative approach.
-                size_t onePos = 0;
-                for (size_t i = 0; i <= 8 * sizeof(size_t); i++)
-                {
-                    // Special case for zero.
-                    if (i == 8 * sizeof(size_t))
-                    {
-                        return 0;
-                    }
-
-                    size_t mask = (size_t)1 << ((8 * sizeof(size_t) - 1) - i);
-                    if ((val & mask) != 0)
-                    {
-                        onePos = (8 * sizeof(size_t) - 1) - i;
-                        break;
-                    }
-                }
-                return onePos;
-            }
-
 #ifdef RESIZE
             // The next part of the table to copy.
             // Represents "work chunks" claimed by resizers.
@@ -144,29 +114,39 @@ public:
             // Signals when all resizing is finished.
             std::atomic<size_t> copyDone;
 
+            // Report our completed chunks and, if all chunks are complete, attempt to promote the new table over the old one.
+            // hashMap: Our hash map.
+            // oldTable: The table that is (as far as we know) currently in place.
+            // workDone: Number of completed chunks.
             void copyCheckAndPromote(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, size_t workDone)
             {
+                // We should never attempt to replace our old table with itself.
                 assert(&(oldTable->chm) == this);
+
+                // Get the length of the old table.
                 size_t oldLen = oldTable->len;
+                // Get the amount of work already completed.
                 size_t copyDone = this->copyDone.load();
+                // It doesn't make sense to copy over more pairs than existed in the old table.
                 assert(copyDone + workDone <= oldLen);
+
                 // If we made at leat once slot unusable, then we did some of the needed copy work.
                 if (workDone > 0)
                 {
+                    // Increment this table's shared work completed counter.
                     this->copyDone.fetch_add(workDone);
                 }
+                // If all values have been transfered.
                 // Attempt table promotion.
                 if (copyDone + workDone == oldLen &&
                     hashMap->table.compare_exchange_strong(oldTable, newTable))
                 {
-                    // TODO: Record the last resize here.
-                    //hashMap->lastResize = std::chrono::high_resolution_clock::now();
-
                     // TODO: Determine when it is safe to deallocate the old table(s).
+                    // Perhaps use an atomic counter to track?
                 }
                 return;
             }
-
+            // Copy a key-value pair from the old table into the new table.
             bool copySlot(ConcurrentHashMap<Key, Value, Hash> *hashMap, size_t idx, Table *oldTable, Table *newTable)
             {
                 // A minor optimization to eagerly stop put operations from succeeding by placing a tombstone.
@@ -203,7 +183,7 @@ public:
                     else
                     {
                         // We failed. Update the old value for CAS and retry.
-                        oldVal = oldTable->value(idx);
+                        oldVal = actualVal;
                     }
                 }
                 // We have successfully marked the value.
@@ -214,17 +194,28 @@ public:
                     // No need to migrate a value. We are done.
                     return false;
                 }
+
                 // Try to copy the value from the old table into the new table.
+                // The old value should never be marked with a PMwCASFlag or RDCSSFlag.
+                // This is more complex to test because MigrationFlag shares bits from both.
+                assert(isMarked((uintptr_t)oldVal, MigrationFlag) ||
+                       (!isMarked((uintptr_t)oldVal, PMwCASFlag) &&
+                        !isMarked((uintptr_t)oldVal, RDCSSFlag)));
+                // Get the unmarked old value.
                 Value oldUnmarked = (Value)clearMark((uintptr_t)oldVal, MigrationFlag);
-                // If this was a tombstone, whe should have already finished. This should be impossible.
+                // If this was a tombstone, we should have already finished. This should be impossible.
                 assert(oldUnmarked != VTOMBSTONE);
                 // Attempt to copy the value into the new table.
                 // Only succeeds if there isn't already a value there.
                 // If there is, we say that our write "happened before" the write that placed the existing value.
+                // In that case, we don't need to do anything.
                 bool copiedIntoNew = (hashMap->putIfMatch(newTable, key, oldUnmarked, VINITIAL) == VINITIAL);
 
                 // Now that the value has been migrated, replace the old table value with a tombstone.
                 // This will prevent other threads from redundantly attempting to copy to the new table.
+                // If other threads attempt this redundant computation, it will waste time but not hurt correctness.
+                // They will see the value has been migrated and fail to replace.
+                // Keep trying until we succeed.
                 Value actualVal = CASvalue(oldTable, idx, oldVal, TOMBPRIME);
                 while (actualVal != oldVal)
                 {
@@ -232,6 +223,8 @@ public:
                     actualVal = CASvalue(oldTable, idx, oldVal, TOMBPRIME);
                 }
                 // Return whether or not we made progress (copied a value from the old table to the new table).
+                // Note: Stalling threads may delay reporting of completed migrations.
+                // This means old tables may continue to exist for longer than we like, but it shouldn't hurt correctness.
                 return copiedIntoNew;
             }
 #endif
@@ -244,9 +237,11 @@ public:
             // If this number gets too large, consider resizing.
             std::atomic<size_t> slots;
 #ifdef RESIZE
-            // A table.
+            // A replacement table.
             // All values in the current table must migrate here before deallocating the current table.
             std::atomic<Table *> newTable;
+            // Place a new table.
+            // If multiple resizers attempt this, they race to succeed.
             bool CASNewTable(Table *newTable)
             {
                 bool ret;
@@ -265,12 +260,13 @@ public:
                 return ret;
             }
 #endif
+            // The CHM constructor.
+            // The CHM tracks control structure data for the hash table, particularly involving resizing.
             CHM(size_t tableCapacity = Table::MIN_SIZE, size_t existingSize = 0)
             {
                 this->size.store(existingSize);
                 slots.store(tableCapacity);
 #ifdef RESIZE
-                resizersCount.store(0);
                 newTable.store(nullptr);
                 copyIdx.store(0);
                 copyDone.store(0);
@@ -278,6 +274,7 @@ public:
             }
 
             // Heuristic to estimate if the table is overfull.
+            // This will prevent the load factor from getting too high.
             bool tableFull(size_t reprobeCount, size_t len)
             {
                 // A cheap check to potentially avoid the atomic get.
@@ -285,7 +282,6 @@ public:
                 // If we reprobed too far, this suggests an overfull table.
                 return reprobeCount >= REPROBE_LIMIT &&
                        // If the table is over 1/4 full.
-                       // TODO: Can probably stretch this further with hopscotch hashing.
                        slots.load() >= REPROBE_LIMIT + (len / 4);
             }
 #ifdef RESIZE
@@ -299,7 +295,6 @@ public:
                 {
                     return newTable;
                 }
-
                 // No copy is in progress, so start one.
 
                 // Compute the new table size.
@@ -324,7 +319,7 @@ public:
                     newSize = oldLen << 2;
                 }
 
-                // TODO: Consider the last resize. If it was recent, then double again.
+                // TODO: (Low priority) Consider the last resize. If it was recent, then double again.
                 // This helps reduce the number of resizes, particularly early on.
 
                 // Disallow shrinking the table.
@@ -336,15 +331,8 @@ public:
                     newSize = oldLen * 2;
                 }
 
-                // Compute log2 of newSize.
-                size_t log2 = highestBit(newSize);
-
-                // Limit the number of resizers.
-                // We do this by "taking a number" to see how many are already working on it.
-                // size_t r = resizersCount.fetch_add(1);
-                // TODO: Wait for a bit if there are at least 2 threads already trying to resize.
-
                 // Check one last time to make sure the table has not yet been allocated.
+                // Allocating a table is expensive, so we want to minimize the chance for redundant work.
                 newTable = this->newTable.load();
                 if (newTable != nullptr)
                 {
@@ -352,8 +340,7 @@ public:
                 }
 
                 // Allocate the new table.
-                // TODO: We need to mmap the table and pass in the address space here so we know where to place pairs.
-                newTable = new Table(newSize, size);
+                newTable = mmapTable(true, newSize, size, getOrderedFileName());
 
                 // Attempt to CAS the new table.
                 // Only one thread can succeed here.
@@ -365,7 +352,7 @@ public:
                 {
                     // Failure means some other thread succeeded.
                     // Free the allocated memory.
-                    delete newTable;
+                    munmapTable(newTable);
                     // And get the table that was placed.
                     newTable = this->newTable.load();
                     // The new table should never be NULL.
@@ -374,9 +361,12 @@ public:
                 return newTable;
             }
 
+            // Copy a key-value pair, report the migration, and attempt to promote the table if all migration work is complete.
             Table *copySlotAndCheck(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, size_t idx, bool shouldHelp)
             {
+                // We should never migrate into the old table.
                 assert(&(oldTable->chm) == this);
+                // Get our new table we want to migrate the slot to.
                 Table *newTable = this->newTable.load();
                 // Don't bother copying if there isn't even a table transfer in progress.
                 assert(newTable != nullptr);
@@ -384,6 +374,7 @@ public:
                 if (copySlot(hashMap, idx, oldTable, newTable))
                 {
                     // Record that a slot was copied.
+                    // If the work is complete, promote our new table as the main table.
                     copyCheckAndPromote(hashMap, oldTable, 1);
                 }
                 // Help the copy along, unless this was called recursively.
@@ -394,19 +385,26 @@ public:
             // Do not migrate the whole table by default.
             void helpCopyImpl(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *oldTable, bool copyAll = false)
             {
+                // We should never migrate into the old table.
                 assert(&(oldTable->chm) == this);
+                // Get our new table we want to migrate the slot to.
                 Table *newTable = this->newTable.load();
+                // Don't bother copying if there isn't even a table transfer in progress.
                 assert(newTable != nullptr);
+                // Get the size of our old table.
                 size_t oldLen = oldTable->len;
+                // We will attempt to copy in chunks of 1024 key-value pairs at a time.
                 const size_t MIN_COPY_WORK = (oldLen < 1024) ? oldLen : 1024;
 
+                // By default, we have not panicked.
                 long panicStart = -1;
+                // This is the index where our chunk starts.
                 size_t copyIdx;
 
                 // If copying is not yet complete.
                 while (copyDone.load() < oldLen)
                 {
-                    // If we have not yet paniced.
+                    // If we have not yet panicked.
                     if (panicStart == -1)
                     {
                         // Try to claim a chunk of work.
@@ -414,7 +412,6 @@ public:
                         while (copyIdx < (oldLen << 1) &&
                                !this->copyIdx.compare_exchange_strong(copyIdx, copyIdx + MIN_COPY_WORK))
                         {
-                            copyIdx = this->copyIdx.load();
                         }
                         // Panic if the threads have collectively attempted to copy the table twice, yet the work still isn't done.
                         if (copyIdx >= (oldLen << 1))
@@ -431,6 +428,7 @@ public:
                     {
                         // Copy from the old table to the new table.
                         // If we successfully modified the old slot to disallow key replacement.
+                        // Note how we "logical and" with oldLen to allow multiple rounds of migration attempts.
                         if (copySlot(hashMap, (copyIdx + i) & (oldLen - 1), oldTable, newTable))
                         {
                             // Count it.
@@ -445,6 +443,7 @@ public:
                     }
                     // Move on to the next chunk of work.
                     copyIdx += MIN_COPY_WORK;
+
                     // Stop working after just doing the bare minimum amount of work.
                     // NOTE: This can be commented out to instead keep taking on additional chunks of work until the whole resize process is complete.
                     // if (!copyAll && panicStart == -1)
@@ -508,6 +507,7 @@ public:
             return oldKeyRef;
         }
         // Function to CAS a value.
+        // Can be replaced with an alternative, conditional CAS function.
         static Value CASvalue(Table *table, size_t idx, Value oldValue, Value newValue)
         {
             assert(idx < table->len);
@@ -515,7 +515,8 @@ public:
             pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
-        // Function to increment a value.
+        // Example conditional CAS replacement.
+        // Increments the value associated with a key.
         static Value increment(Table *table, size_t idx, Value oldValue, Value newValue)
         {
             assert(idx < table->len);
@@ -531,156 +532,243 @@ public:
             pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
+        static const char *getOrderedFileName()
+        {
+            // The file name is based on the UNIX epoch time.
+            // The thread ID is concatonated to it, just in case, for distinction.
+            auto chronoTime = std::chrono::system_clock::now();
+            auto intTime = std::chrono::duration_cast<std::chrono::seconds>(
+                               chronoTime.time_since_epoch())
+                               .count();
+            std::string strTime = "./data/tables/" +
+                                  std::to_string(intTime) +
+                                  "_" +
+                                  std::to_string(localThreadNum) +
+                                  ".dat";
+            return strTime.c_str();
+        }
+        static Table *mmapTable(bool newTable, size_t tableCapacity, size_t existingSize = 0, const char *constFileName = NULL)
+        {
+            // This is the name and location of our persistent memory file for this table.
+            const char *fileName;
+            // This will hold the file descriptor of our memory mapped file.
+            int fd;
+            // This will hold the memory address of our memory mapped table.
+            KVpair *pairs = NULL;
+            // The table we ultimately return.
+            Table *table = NULL;
+
+            // If a filename wasn't provided, get one ourselves.
+            if (constFileName == NULL)
+            {
+                fileName = Table::getOrderedFileName();
+            }
+            else
+            {
+                fileName = constFileName;
+            }
+
+            // If we want to map a new file.
+            if (newTable)
+            {
+                // Try to open an existing hash table.
+                fd = open(fileName, O_RDWR);
+            }
+            // If we want to map an existing file.
+            else
+            {
+                // We will open the existing file.
+                // Report table doesn't exist.
+                fd = -1;
+            }
+
+            // If we opened an exsiting file, just map the data.
+            if (fd != -1)
+            {
+                // Used to store file information.
+                struct stat finfo;
+                // Get existing file size.
+                if (fstat(fd, &finfo) == -1)
+                {
+                    // Error.
+                    fprintf(stderr, "Failed to read the existing file's size.\n");
+                }
+                size_t length = finfo.st_size;
+                // length should always be some multiple of our KVpair size.
+                assert(length % sizeof(KVpair) == 0);
+                size_t size = length / sizeof(KVpair);
+
+                // Map the file.
+                pairs = (KVpair *)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if ((intptr_t)pairs == -1)
+                {
+                    // Error.
+                    std::cerr << "Failed to mmap the existing file. errno = "
+                              << errno << ", " << strerror(errno) << std::endl;
+                    throw std::logic_error("mmap existing file failed.");
+                }
+
+                // Allocate our table.
+                // We pass in the asigned location of our KV pairs to assign them to the structure.
+                // We pass in the size of the table to assign the length.
+                table = new Table(size, existingSize, pairs);
+
+                // Use the KV pairs to infer the number of used and free entries in the table.
+                table->chm.size.store(0);
+                table->chm.slots.store(0);
+                for (size_t i = 0; i < size; i++)
+                {
+
+                    Value V = table->value(i);
+                    Key K = table->key(i);
+
+                    // While we're at it, check for inconsistent table entries.
+                    // THis is the only situation I've come up with where we could have a problem with partial persists.
+                    if (K != KINITIAL && V == VINITIAL)
+                    {
+                        // If the key has been set but the value hasn't, then we have an incomplete insert on our hands.
+                        // Just make it a tombstone since we don't know what value it should have been.
+                        Table::CASvalue(table, i, VINITIAL, VTOMBSTONE);
+                        // Update the replaced value for subsequent use in this loop.
+                        V = table->value(i);
+                        // We should always succeed. We are running sequentially, after all.
+                        assert(V == VTOMBSTONE);
+                    }
+
+                    // Anything that's not a sentinel.
+                    if (V != VINITIAL && V != VTOMBSTONE && V != TOMBPRIME)
+                    {
+                        table->chm.size.fetch_add(1);
+                    }
+                    // Anything left that's not a tombstone.
+                    else if (V != VTOMBSTONE && V != TOMBPRIME)
+                    {
+                        table->chm.slots.fetch_add(1);
+                    }
+                }
+            }
+            // If the file doesn't exist yet, try to make it.
+            else
+            {
+                // Create and open the file.
+                fd = open(fileName, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
+                if (fd == -1)
+                {
+                    // Error.
+                    std::cerr << "Failed to create or open the file." << std::endl;
+                    throw std::runtime_error("cannot create or open file");
+                }
+                // Allocate enough space for the KV pairs.
+                size_t length = sizeof(KVpair) * tableCapacity;
+                // Truncate will actually extend the size of the file by filling with NULL.
+                if (ftruncate(fd, length) == -1)
+                {
+                    // Error.
+                    std::cerr << "Failed to adjust file size." << std::endl;
+                    throw std::runtime_error("cannot create or open file");
+                }
+                // Allocate our file.
+                KVpair *pairs = (KVpair *)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+                if ((intptr_t)pairs == -1)
+                {
+                    // Error.
+                    std::cerr << "Failed to mmap a new file. errno = "
+                              << errno << ", " << strerror(errno) << std::endl;
+                    throw std::logic_error("mmap new file failed.");
+                }
+                // Initialize the new file.
+                for (size_t i = 0; i < tableCapacity; i++)
+                {
+                    // Initialize these to a default, reserved value.
+                    pairs[i].key.store((Key)setMark(KINITIAL, DirtyFlag));
+                    pairs[i].value.store((Value)setMark(VINITIAL, DirtyFlag));
+                }
+                // Persist all keys and values.
+                // Everything else can be inferred upon recovery.
+                PERSIST(pairs, sizeof(KVpair) * tableCapacity);
+                // Allocate our table.
+                // We pass in the location of our KV pairs to assign them to the structure.
+                // We pass in the size of the table to assign the length.
+                table = new Table(tableCapacity, existingSize, pairs);
+            }
+            // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
+            close(fd);
+
+            // Return the mapped table.
+            return table;
+        }
+        static bool munmapTable(Table *table)
+        {
+            size_t size = table->chm.size.load();
+            bool ret = (munmap(table, (sizeof(KVpair) * size)) != 0);
+            delete table;
+            return ret;
+        }
     };
 
     // Constructor.
-    ConcurrentHashMap(const char *fileName, size_t size = Table::MIN_SIZE, bool reconstruct = true)
+    ConcurrentHashMap(const char *fileDir, size_t size = Table::MIN_SIZE, bool reconstruct = true)
     {
-        // NOTE: Without resizing, we can just grab the static size of the table for recovery. size is the number of KVPairs.
+        // TODO: Recovery.
+        // Name tables by order of creation. This allows inferring our layers.
+        // Timestamp may be sufficient.
+        // File size may be sufficient if we only allow expansion.
+        // We can filter out empty tables, which may exist during a multithreaded table allocation race.
+        // For each table
+        // If table is empty, delete it and continue.
+        // If table is fully migrated (special empty case), delete it and continue.
+        // if table is partially migrated, migrate it to the next non-empty table, then delete it and continue by working with the newer table.
+        // if table is at the top level (latest table), then we are done migrating. Close the file handle but keep the mmap.
+        // Assign our top-level table at the top level in our data structure.
 
-        // TODO: Memory mapping isn't as simple if we have to handle multiple tables.
-        // This will hold the file descriptor of our memory mapped file.
-        int fd;
-        // This will hold the memory address of our memory mapped table.
-        void *address;
-        // A temporary place to reference the table.
-        Table *table;
-        if (reconstruct)
-        {
-            // Try to open an existing hash table.
-            fd = open(fileName, O_RDWR);
-        }
-        else
-        {
-            // Report table doesn't exist.
-            fd = -1;
-        }
+        // std::vector<std::string> tables;
 
-        // If we succeeded, just map the existing data.
-        if (fd != -1)
-        {
-            // // Used to store file information.
-            // struct stat finfo;
-            // // Get existing file size.
-            // if (fstat(fd, &finfo) == -1)
-            // {
-            //     // error
-            //     fprintf(stderr, "Failed to read the existing file's size.\n");
-            // }
-            // size_t length = finfo.st_size;
+        // // Tables are named by order of creation, but this is not reliable in a concurrent environment.
+        // // TODO: Consider ordering by table size instead, since tables must always grow?
 
-            // We are getting the fixed size for now.
-            // TODO: Support resizing later.
-            size_t length = sizeof(KVpair) * size;
-            // Map the file.
-            address = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if ((intptr_t)address == -1)
-            {
-                // error
-                std::cerr << "Failed to mmap the existing file. errno = "
-                          << errno << ", " << strerror(errno) << std::endl;
-                throw std::logic_error("mmap existing file failed.");
-            }
+        // // Get the table names.
+        // std::filesystem::path path = fileDir;
+        // for (auto &p : std::filesystem::directory_iterator(path))
+        // {
+        //     const std::string filenameStr = p.path().filename().string();
+        //     if (p.is_regular_file())
+        //     {
+        //         tables.push_back(filenameStr);
+        //     }
+        // }
 
-            // Allocate our table.
-            // We pass in the asigned location of our KV pairs to assign them to the structure.
-            // We pass in the size of the table to assign the length.
-            table = new Table(size, 0, (KVpair *)address);
+        // // Sort the tables by name.
+        // std::sort(tables.begin(), tables.end(),
+        //           [](std::string a, std::string b) {
+        //               return a.compare(b) < 0;
+        //           });
 
-            // Use the KV pairs to infer the number of used and free entries in the table.
-            table->chm.size.store(0);
-            table->chm.slots.store(0);
-            for (size_t i = 0; i < size; i++)
-            {
-                Value V = table->pairs[i].value.load();
-                Key K = table->pairs[i].key.load();
+        // // For each table.
+        // for (auto it = myvector.begin(); it != myvector.end(); ++it)
+        // {
+        //     // Allocate an mmapped table.
+        //     Table *table = Table::mmapTable(!reconstruct, size, 0, *it);
+        // }
 
-                // While we're at it, check for inconsistent table entries.
-                // THis is the only situation I've come up with where we could have a problem with partial persists.
-                if (K != KINITIAL && V == VINITIAL)
-                {
-                    // If the key has been set but the value hasn't, then we have an incomplete insert on our hands.
-                    // Just make it a tombstone since we don't know what value it should have been.
-                    Table::CASvalue(table, i, VINITIAL, VTOMBSTONE);
-                    // Update the replaced value for subsequent use in this loop.
-                    V = table->pairs[i].value.load();
-                    // We should always succeed. We are running sequentially, after all.
-                    assert(V == VTOMBSTONE);
-                }
-
-                // Anything that's not a sentinel.
-                if (V != VINITIAL && V != VTOMBSTONE && V != TOMBPRIME)
-                {
-                    table->chm.size.fetch_add(1);
-                }
-                // Anything left that's not a tombstone.
-                else if (V != VTOMBSTONE && V != TOMBPRIME)
-                {
-                    table->chm.slots.fetch_add(1);
-                }
-            }
-        }
-        // If file doesn't exist yet. Try to make it.
-        else
-        {
-            // Create and open the file.
-            fd = open(fileName, O_RDWR | O_CREAT, S_IRUSR | S_IWUSR);
-            if (fd == -1)
-            {
-                // error
-                std::cerr << "Failed to create or open the file." << std::endl;
-                throw std::runtime_error("cannot create or open file");
-            }
-            // Allocate enough space for the KV pairs.
-            size_t length = sizeof(KVpair) * size;
-            // Truncate will actually extend the size of the file by filling with NULL.
-            if (ftruncate(fd, length) == -1)
-            {
-                // error
-                std::cerr << "Failed to adjust file size." << std::endl;
-                throw std::runtime_error("cannot create or open file");
-            }
-            // Allocate our file.
-            KVpair *pairs = (KVpair *)mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-            if ((intptr_t)pairs == -1)
-            {
-                // error
-                std::cerr << "Failed to mmap a new file. errno = "
-                          << errno << ", " << strerror(errno) << std::endl;
-                throw std::logic_error("mmap new file failed.");
-            }
-            // Initialize the new file.
-            for (size_t i = 0; i < size; i++)
-            {
-                // Initialize these to a default, reserved value.
-                pairs[i].key.store((Key)setMark(KINITIAL, DirtyFlag));
-                pairs[i].value.store((Value)setMark(VINITIAL, DirtyFlag));
-            }
-            // Persist all keys and values.
-            // Everything else can be inferred upon recovery.
-            PERSIST(pairs, sizeof(KVpair) * size);
-            // Allocate our table.
-            // We pass in the location of our KV pairs to assign them to the structure.
-            // We pass in the size of the table to assign the length.
-            table = new Table(size, 0, pairs);
-        }
-        // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
-        close(fd);
+        // Allocate an mmapped table.
+        Table *table = Table::mmapTable(!reconstruct, size, 0, fileDir);
         // Store the table.
         this->table.store(table);
         return;
     }
+    // TODO: This filename isn't a given, especially since resizing could have more than one file at a time.
     ConcurrentHashMap(size_t sz = Table::MIN_SIZE)
-        : ConcurrentHashMap("./hashmap.dat", sz)
+        : ConcurrentHashMap("./data/tables/", sz)
     {
     }
     ~ConcurrentHashMap()
     {
-        size_t size = table.load()->chm.size.load();
+        // TODO: Unmap all mapped files, I guess.
+        Table *table = table.load();
         // Unmap the file.
-        if (munmap(table.load(), sizeof(Table) + (sizeof(KVpair) * size)) != 0)
+        if (!munmapTable(table))
         {
-            // error
+            // Error.
             fprintf(stderr, "Failed to unmap the file from memory.\n");
         }
         return;
@@ -689,7 +777,8 @@ public:
     // This number is really only meaningful if the size is not being changed by other threads.
     size_t size()
     {
-        return table.load()->chm.size.load();
+        Table *table = this->table.load();
+        return table->chm.size.load();
     }
     bool isEmpty()
     {
@@ -749,18 +838,17 @@ public:
         return K == key;
     }
 
+    // Heavy lifting for user-facing get value from key.
     Value getImpl(Table *table, Key key, int fullHash)
     {
         // The capacity of the table.
         size_t len = table->len;
-
         // The hash of the key.
         // Truncated to keep within the boundaries of the key range.
         size_t idx = fullHash & (len - 1);
 
         // Probe loop.
         // Keep searching until the key is found or we have exceeded the probe bounds.
-        // TODO: Modify this to support hopscotch hashing.
         size_t reprobeCount = 0;
         while (true)
         {
@@ -821,26 +909,40 @@ public:
     // Get the value associated with a particular key.
     Value get(Key key)
     {
+        // The hash of the key determines the target index.
         size_t fullhash = Hash{}(key);
+        // Get the value associated with the key.
         Value V = getImpl(table, key, fullhash);
+        // We should never return a value that is mid-migration.
         assert(!isMarked((uintptr_t)V, MigrationFlag));
+        // Return the associated value.
         return V;
     }
 
     // Called by most put functions. This one does the heavy lifting.
+    // This accepts custom conditional CAS functions.
     Value putIfMatch(Table *table, Key key, Value newVal, Value oldVal,
                      Value CAS(Table *table, size_t idx, Value oldValue, Value newValue) = &Table::CASvalue)
     {
+        // It's not appropriate to set a value back to an initial, unset state.
         assert(newVal != VINITIAL);
+        // The new and old values shouldn't be marked for migration.
         assert(!isMarked(newVal, MigrationFlag));
         assert(!isMarked(oldVal, MigrationFlag));
+
+        // The capacity of the table.
         size_t len = table->len;
+        // The hash of the key.
+        // Truncated to keep within the boundaries of the key range.
         size_t idx = Hash{}(key) & (len - 1);
 
+        // Keep track of how far we linearly probe.
         size_t reprobeCount = 0;
+        // The key and value currently in the slot.
         Key K;
         Value V;
 #ifdef RESIZE
+        // Prepare a new table, as needed.
         Table *newTable = nullptr;
 #endif
         // Spin until we get a key slot.
@@ -867,6 +969,7 @@ public:
                 // If the CAS succeeded.
                 if (actualKey == KINITIAL)
                 {
+                    // Mark the slot as used.
                     table->chm.slots.fetch_add(1);
                     break;
                 }
@@ -877,11 +980,7 @@ public:
                     K = actualKey;
                 }
             }
-            // The slot is not empty.
-
-#ifdef RESIZE
-            newTable = table->chm.newTable.load();
-#endif
+            // At this stage, the slot is not empty.
 
             // See if we found a match.
             if (keyEq(K, key))
@@ -896,6 +995,8 @@ public:
             {
 #ifdef RESIZE
                 // Resize the table.
+                // We do this by creating a new, larger table.
+                // We don't need to migrate everything yet, but all threads will use the new table in the future.
                 newTable = table->chm.resize(this, table);
                 // Help copy over an existing value.
                 // If we are attempting to replace the value without concern for the old value, we don't have to bother with this.
@@ -905,6 +1006,7 @@ public:
                     helpCopy(newTable);
                 }
                 // Try again in the new table.
+                // This is a recursive call.
                 return putIfMatch(newTable, key, newVal, oldVal);
 #else
                 // The key is not present.
@@ -929,7 +1031,7 @@ public:
         if (newTable == nullptr &&
             // And we are doing a fresh key insert while the table is nearly full.
             ((V == VINITIAL && table->chm.tableFull(reprobeCount, len)) ||
-             // Or our value is primed.
+             // Or our value is marked.
              isMarked((uintptr_t)V, MigrationFlag)))
         {
             // Force the table copy to start.
@@ -940,6 +1042,7 @@ public:
         if (newTable != nullptr)
         {
             // Copy the slot and retry in the new table.
+            // This is a recursive call to the new table.
             return this->putIfMatch(table->chm.copySlotAndCheck(this, table, idx, oldVal == VINITIAL), key, newVal, oldVal);
         }
 #endif
@@ -1023,6 +1126,8 @@ public:
         return helper;
     }
 #endif
+    // Print out the table contents.
+    // Used for debugging.
     void print()
     {
         Table *topTable = table.load();
@@ -1032,16 +1137,20 @@ public:
 
             Key key = topTable->key(i);
             Value value = topTable->value(i);
-            // TODO: Try to make this pretty-printing of sentinels actually work.
+            // TODO: (low priority) Try to make this pretty-printing of sentinels actually work.
             std::cout << "key: " << key << "value: " << value << "\n";
         }
         std::cout << std::endl;
     }
 
+    // Reports whether or not this key can be used.
+    // If it is reserved, then it serves a special purpose as a sentinel.
     static bool isKeyReserved(Key key)
     {
         return key == KINITIAL || key == KTOMBSTONE;
     }
+    // Reports whether or not this value can be used.
+    // If it is reserved, then it serves a special purpose as a sentinel.
     static bool isValueReserved(Value value)
     {
         return value == VINITIAL || value == VTOMBSTONE || value == TOMBPRIME || value == MATCH_ANY || value == NO_MATCH_OLD;
@@ -1049,11 +1158,13 @@ public:
 
 private:
     // The structure that stores the top table.
+    // TODO: Add in table file reasoning.
     std::atomic<Table *> table;
 };
 
 // size_t keys and values.
 // Initialization of sentinels.
+// Values allocated dynamically.
 // template <typename Key, typename Value>
 // Value ConcurrentHashMap<Key, Value>::VINITIAL = new size_t();
 // template <typename Key, typename Value>
@@ -1070,6 +1181,9 @@ private:
 // template <typename Key, typename Value>
 // Key ConcurrentHashMap<Key, Value>::KTOMBSTONE = new size_t();
 
+// size_t keys and values.
+// Initialization of sentinels.
+// Values are static.
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::VINITIAL = ((((size_t)1 << 62) - 1) << 3);
 template <typename Key, typename Value, class Hash>

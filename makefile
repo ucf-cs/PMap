@@ -29,7 +29,7 @@ default: $(TARGET)
 
 $(TARGET): runTest.cpp #$(HEADERS)
 	mkdir -p ./bin
-	$(CXX) -std=c++17 $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(ARCHFLAG) $(INCLUDES) $(LIBS) -fuse-ld=gold $< -o $@
+	$(CXX) -std=c++2a $(WARNFLAG) -pthread $(OPTFLAG) $(DBGFLAG) $(ARCHFLAG) $(INCLUDES) $(LIBS) -fuse-ld=gold $< -o $@
 
 .PHONY: valcheck
 valcheck: $(TARGET)

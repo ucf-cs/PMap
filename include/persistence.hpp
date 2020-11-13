@@ -30,8 +30,7 @@ const uintptr_t FLUSH_ALIGN = 64;
 
 // Base persistence functions.
 // TODO: Consider relocating these base functions to another file.
-__attribute__((unused))
-static void PERSIST(const void *addr, size_t len)
+__attribute__((unused)) static void PERSIST(const void *addr, size_t len)
 {
 #ifdef DURABLE
     uintptr_t uptr;
@@ -46,8 +45,7 @@ static void PERSIST(const void *addr, size_t len)
 #endif
 }
 
-__attribute__((unused))
-static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
+__attribute__((unused)) static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
 {
 #ifdef DURABLE
     uintptr_t uptr;
@@ -61,8 +59,7 @@ static void PERSIST_FLUSH_ONLY(const void *addr, size_t len)
 #endif
 }
 
-__attribute__((unused))
-static void PERSIST_BARRIER_ONLY()
+__attribute__((unused)) static void PERSIST_BARRIER_ONLY()
 {
 #ifdef DURABLE
     FENCE;
@@ -86,11 +83,11 @@ template <class U>
 static U pcas_read(std::atomic<U> *address)
 {
     U word = address->load();
-    if ((word & DirtyFlag) != 0)
+    if (((uintptr_t)word & DirtyFlag) != 0)
     {
         persist(address, word);
     }
-    return word & ~DirtyFlag;
+    return (U)((uintptr_t)word & ~DirtyFlag);
 }
 
 // Always use this when CAS'ing fields with a dirty flag, unless you are marking the dirty flag by hand.
@@ -102,7 +99,7 @@ static bool pcas(std::atomic<U> *address, U &oldVal, U newVal)
     // Ensure the field is persisted.
     pcas_read<U>(address);
     // Attempt to CAS.
-    bool ret = address->compare_exchange_strong(oldVal, newVal | DirtyFlag);
+    bool ret = address->compare_exchange_strong(oldVal, (U)((uintptr_t)newVal | DirtyFlag));
     assert((ret && oldValCopy == oldVal) || (!ret && oldValCopy != oldVal));
     return ret;
 }

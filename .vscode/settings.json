@@ -67,6 +67,7 @@
         "random": "cpp",
         "shared_mutex": "cpp",
         "variant": "cpp",
-        "bit": "cpp"
+        "bit": "cpp",
+        "codecvt": "cpp"
     }
 }
