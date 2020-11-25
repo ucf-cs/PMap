@@ -63,7 +63,7 @@ namespace redditTest
             try
             {
                 const size_t tinum = ti.num;
-                std::string str = "/home/marioman/PMap/data/reddit_author_hash.uint64_t";
+                std::string str = "/home/kenneth/PMap/data/reddit_author_hash.uint64_t";
                 parseFile(ti, str);
 
                 ++wrid;

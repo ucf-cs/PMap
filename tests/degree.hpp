@@ -83,7 +83,7 @@ namespace degreeTest
             try
             {
                 const size_t tinum = ti.num;
-                std::string str = "/home/marioman/PMap/data/rmat/edge_list_rmat_s10_" + std::to_string(tinum) + "_of_4";
+                std::string str = "/home/kenneth/PMap/data/rmat/edge_list_rmat_s10_" + std::to_string(tinum) + "_of_4";
                 //std::string str = "./data/rmat/smallTest";
                 parseFile(ti, str);
 

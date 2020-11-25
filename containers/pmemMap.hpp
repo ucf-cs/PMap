@@ -11,6 +11,8 @@
 #include <libpmemobj++/persistent_ptr.hpp>
 #include <libpmemobj++/container/concurrent_hash_map.hpp>
 
+#include <unistd.h>
+
 namespace pm
 {
     // cmp. w/ example in doxygen docu for pmem's concurrent_hash_map
@@ -48,9 +50,12 @@ namespace pm
         ValT get(KeyT el)
         {
             pm::root::map_type::accessor result;
-            pop.root()->pptr->find(result, el);
-            value_type v = *result;
-            return ValT(v.second);
+            if (pop.root()->pptr->find(result, el))
+            {
+                value_type v = *result;
+                return ValT(v.second);
+            }
+            return ValT(0);
         }
 
         size_t count()
@@ -96,8 +101,7 @@ namespace pm
 
                 pmem::obj::transaction::manual tx(pop);
 
-                proot->cons = pmem::obj::make_persistent<root::map_type>();
-                proot->cons->set_thread_num(1);
+                proot->pptr = pmem::obj::make_persistent<root::map_type>();
 
                 pmem::obj::transaction::commit();
             }

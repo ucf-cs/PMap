@@ -34,6 +34,10 @@ int main(int argc, char **args)
 
     settings.print();
 
+    // Performance results output.
+    std::ofstream output;
+    output.open("output.txt", std::ios::out | std::ios::app);
+
     try
     {
         size_t total_time = 0;
@@ -52,6 +56,8 @@ int main(int argc, char **args)
 
         std::cout << "average time: " << (total_time / settings.numruns) << std::endl;
         std::cout << std::endl;
+
+        output << total_time << "\t" << settings.numthreads << "\t" << typeid(test_type).name() << "\t" << typeid(container_type).name() << std::endl;
     }
     catch (const std::runtime_error &err)
     {

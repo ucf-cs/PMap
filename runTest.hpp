@@ -12,22 +12,38 @@
 #include <thread>
 #include <vector>
 
+//#define pmDef
+//#define randomTestDef
+
 // Only uncomment PMEM containers when you use them.
 // Otherwise, they will try to open a PMEM file on persistent memory, even when unused.
-//#include "containers/onefileMap.hpp"
-//#include "containers/pmemMap.hpp"
-//#include "containers/stlMap.hpp"
+
 #include "containers/ucfMap.hpp"
 //#include "containers/ucfHopscotchMap.hpp"
-#include "containers/levelMap.hpp"
+#include "containers/stlMap.hpp"
 
 // The container to use.
-//using container_type = ucf::container_type;
-//using container_type = ucfHopscotch::container_type;
-//using container_type = stl::container_type;
-//using container_type = pm::container_type;
-//using container_type = onefile::container_type;
+#ifdef ucfDef
+using container_type = ucf::container_type;
+#endif
+#ifdef ucfHopscotchDef
+using container_type = ucfHopscotch::container_type;
+#endif
+#ifdef stlDef
+using container_type = stl::container_type;
+#endif
+#ifdef pmDef
+#include "containers/pmemMap.hpp"
+using container_type = pm::container_type;
+#endif
+#ifdef onefileDef
+#include "containers/onefileMap.hpp"
+using container_type = onefile::container_type;
+#endif
+#ifdef clevelDef
+#include "containers/levelMap.hpp"
 using container_type = clevel::container_type;
+#endif
 
 #include "tests/alternating.hpp"
 #include "tests/degree.hpp"
@@ -35,10 +51,18 @@ using container_type = clevel::container_type;
 #include "tests/reddit.hpp"
 
 // The test to run.
-//using test_type = alternatingTest::test_type;
-//using test_type = degreeTest::test_type;
-//using test_type = redditTest::test_type;
+#ifdef alternatingTestDef
+using test_type = alternatingTest::test_type;
+#endif
+#ifdef degreeTestDef
+using test_type = degreeTest::test_type;
+#endif
+#ifdef redditTestDef
+using test_type = redditTest::test_type;
+#endif
+#ifdef randomTestDef
 using test_type = randomTest::test_type;
+#endif
 
 TestOptions::TestOptions()
 {

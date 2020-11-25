@@ -4,7 +4,8 @@
             "name": "Linux",
             "includePath": [
                 "${workspaceFolder}/**",
-                "/home/marioman/onefile"
+                "/home/kenneth/onefile",
+                "/home/kenneth/usr/include"
             ],
             "defines": [],
             "compilerPath": "/usr/bin/gcc",
