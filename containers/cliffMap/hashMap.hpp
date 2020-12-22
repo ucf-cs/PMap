@@ -29,9 +29,8 @@
 #ifndef HASH_MAP_HPP
 #define HASH_MAP_HPP
 
-#include <assert.h>
-
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -90,6 +89,9 @@ class ConcurrentHashMap
     }
 
 public:
+    // Number of bits reserved for marking.
+    static const size_t BITS_MARKED = 3;
+
     // A key-value pair.
     // Using this struct enables adjacent placement of the keys and values in memory.
     typedef struct KVpair
@@ -198,9 +200,9 @@ public:
                 // Try to copy the value from the old table into the new table.
                 // The old value should never be marked with a PMwCASFlag or RDCSSFlag.
                 // This is more complex to test because MigrationFlag shares bits from both.
-                assert(isMarked((uintptr_t)oldVal, MigrationFlag) ||
-                       (!isMarked((uintptr_t)oldVal, PMwCASFlag) &&
-                        !isMarked((uintptr_t)oldVal, RDCSSFlag)));
+                // assert(isMarked((uintptr_t)oldVal, MigrationFlag) ||
+                //        (!isMarked((uintptr_t)oldVal, PMwCASFlag) &&
+                //         !isMarked((uintptr_t)oldVal, RDCSSFlag)));
                 // Get the unmarked old value.
                 Value oldUnmarked = (Value)clearMark((uintptr_t)oldVal, MigrationFlag);
                 // If this was a tombstone, we should have already finished. This should be impossible.
@@ -286,6 +288,7 @@ public:
             }
 #ifdef RESIZE
             // A wait-free resize.
+            // NOTE: Currently, our resize is implicitly only used when the table needs to expand.
             Table *resize(ConcurrentHashMap<Key, Value, Hash> *hashMap, Table *table)
             {
                 // Check for a resize in progress.
@@ -293,6 +296,7 @@ public:
                 Table *newTable = this->newTable.load();
                 if (newTable != nullptr)
                 {
+                    assert(newTable->len > table->len);
                     return newTable;
                 }
                 // No copy is in progress, so start one.
@@ -311,24 +315,24 @@ public:
                 {
                     // Double size.
                     newSize = oldLen << 1;
-                }
-                // If we are >50% full of keys.
-                if (size >= (oldLen / 2))
-                {
-                    // Quadruple size.
-                    newSize = oldLen << 2;
+                    // If we are >50% full of keys.
+                    if (size >= (oldLen / 2))
+                    {
+                        // Effectively quadruple size.
+                        newSize = oldLen << 1;
+                    }
                 }
 
                 // TODO: (Low priority) Consider the last resize. If it was recent, then double again.
                 // This helps reduce the number of resizes, particularly early on.
 
-                // Disallow shrinking the table.
-                if (newSize < oldLen)
+                // The table must always grow.
+                if (newSize <= oldLen)
                 {
                     //newSize = oldLen;
                     // Always enforce a larger table upon resize.
                     // For some reason, without this, we are getting stuck in a loop of resizing (to the same size) then failing to insert, repeating in a vicious cycle.
-                    newSize = oldLen * 2;
+                    newSize = oldLen << 1;
                 }
 
                 // Check one last time to make sure the table has not yet been allocated.
@@ -336,11 +340,13 @@ public:
                 newTable = this->newTable.load();
                 if (newTable != nullptr)
                 {
+                    assert(newTable->len > oldLen);
                     return newTable;
                 }
 
                 // Allocate the new table.
-                newTable = mmapTable(true, newSize, size, getOrderedFileName());
+                std::string filename = getOrderedFileName();
+                newTable = mmapTable(true, newSize, size, filename.c_str());
 
                 // Attempt to CAS the new table.
                 // Only one thread can succeed here.
@@ -358,6 +364,7 @@ public:
                     // The new table should never be NULL.
                     assert(newTable != nullptr);
                 }
+                assert(newTable->len > oldLen);
                 return newTable;
             }
 
@@ -527,29 +534,32 @@ public:
             }
             // Our actual new value here is dependent on the old value.
             // NOTE: The correct way to perform this addition is entirely dependent on the type of Value.
-            newValue = ((oldValue >> 3) + 1) << 3;
+            newValue = ((oldValue >> BITS_MARKED) + 1) << BITS_MARKED;
             // Must be CAS rather than FAA because the old value might be a sentinel.
             pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
-        static const char *getOrderedFileName()
+        static std::string getOrderedFileName()
         {
+            // Using a shared counter means more contention, but guaranteed file ordering.
+            size_t count = fileNameCounter.fetch_add(1);
+            return "/mnt/pmem/pm1/tables/" + std::to_string(count) + ".dat";
+
             // The file name is based on the UNIX epoch time.
             // The thread ID is concatonated to it, just in case, for distinction.
             auto chronoTime = std::chrono::system_clock::now();
-            auto intTime = std::chrono::duration_cast<std::chrono::seconds>(
+            auto intTime = std::chrono::duration_cast<std::chrono::nanoseconds>(
                                chronoTime.time_since_epoch())
                                .count();
-            std::string strTime = "./data/tables/" +
-                                  std::to_string(intTime) +
-                                  "_" +
-                                  std::to_string(localThreadNum) +
-                                  ".dat";
-            return strTime.c_str();
+            std::string ret = "/mnt/pmem/pm1/tables/" +
+                              std::to_string(intTime) + "_" +
+                              std::to_string(localThreadNum) + ".dat";
+            return ret;
         }
         static Table *mmapTable(bool newTable, size_t tableCapacity, size_t existingSize = 0, const char *constFileName = NULL)
         {
             // This is the name and location of our persistent memory file for this table.
+            std::string filenameString;
             const char *fileName;
             // This will hold the file descriptor of our memory mapped file.
             int fd;
@@ -561,7 +571,8 @@ public:
             // If a filename wasn't provided, get one ourselves.
             if (constFileName == NULL)
             {
-                fileName = Table::getOrderedFileName();
+                filenameString = Table::getOrderedFileName();
+                fileName = filenameString.c_str();
             }
             else
             {
@@ -723,9 +734,6 @@ public:
 
         // std::vector<std::string> tables;
 
-        // // Tables are named by order of creation, but this is not reliable in a concurrent environment.
-        // // TODO: Consider ordering by table size instead, since tables must always grow?
-
         // // Get the table names.
         // std::filesystem::path path = fileDir;
         // for (auto &p : std::filesystem::directory_iterator(path))
@@ -750,6 +758,7 @@ public:
         //     Table *table = Table::mmapTable(!reconstruct, size, 0, *it);
         // }
 
+        // TEMP: Just make a table, bypassing recovery.
         // Allocate an mmapped table.
         Table *table = Table::mmapTable(!reconstruct, size, 0, fileDir);
         // Store the table.
@@ -1126,21 +1135,66 @@ public:
         return helper;
     }
 #endif
+    // Pretty-printing for Value sentinels.
+    void printValue(Value val, std::ostream stream = std::cout)
+    {
+        switch (val)
+        {
+        case VINITIAL:
+            stream << "VINITIAL";
+            break;
+        case VTOMBSTONE:
+            stream << "VTOMBSTONE";
+            break;
+        case TOMBPRIME:
+            stream << "TOMBPRIME";
+            break;
+        case MATCH_ANY:
+            stream << "MATCH_ANY";
+            break;
+        case NO_MATCH_OLD:
+            stream << "NO_MATCH_OLD";
+            break;
+        default:
+            stream << val;
+            break;
+        }
+    }
+    // Pretty-printing for Key sentinels.
+    void printKey(Key key, std::ostream stream = std::cout)
+    {
+        switch (key)
+        {
+        case KINITIAL:
+            stream << "KINITIAL";
+            break;
+        case KTOMBSTONE:
+            stream << "KTOMBSTONE";
+            break;
+        default:
+            stream << key;
+            break;
+        }
+    }
     // Print out the table contents.
     // Used for debugging.
-    void print()
+    std::ostream print(Table *topTable = NULL)
     {
-        Table *topTable = table.load();
+        std::ostream output;
+        if (topTable == NULL)
+        {
+            topTable = table.load();
+        }
         size_t len = topTable->len;
         for (size_t i = 0; i < len; i++)
         {
 
             Key key = topTable->key(i);
             Value value = topTable->value(i);
-            // TODO: (low priority) Try to make this pretty-printing of sentinels actually work.
-            std::cout << "key: " << key << "value: " << value << "\n";
+            output << "key: " << printKey(key) << "value: " << printValue(value) << "\n";
         }
-        std::cout << std::endl;
+        output << std::endl;
+        return output;
     }
 
     // Reports whether or not this key can be used.
@@ -1185,19 +1239,19 @@ private:
 // Initialization of sentinels.
 // Values are static.
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::VINITIAL = ((((size_t)1 << 62) - 1) << 3);
+Value ConcurrentHashMap<Key, Value, Hash>::VINITIAL = ((((size_t)1 << 62) - 1) << BITS_MARKED);
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::VTOMBSTONE = ((((size_t)1 << 62) - 2) << 3);
+Value ConcurrentHashMap<Key, Value, Hash>::VTOMBSTONE = ((((size_t)1 << 62) - 2) << BITS_MARKED);
 template <typename Key, typename Value, class Hash>
 Value ConcurrentHashMap<Key, Value, Hash>::TOMBPRIME = (size_t)setMark(VTOMBSTONE, MigrationFlag);
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::MATCH_ANY = ((((size_t)1 << 62) - 3) << 3);
+Value ConcurrentHashMap<Key, Value, Hash>::MATCH_ANY = ((((size_t)1 << 62) - 3) << BITS_MARKED);
 template <typename Key, typename Value, class Hash>
-Value ConcurrentHashMap<Key, Value, Hash>::NO_MATCH_OLD = ((((size_t)1 << 62) - 4) << 3);
+Value ConcurrentHashMap<Key, Value, Hash>::NO_MATCH_OLD = ((((size_t)1 << 62) - 4) << BITS_MARKED);
 
 template <typename Key, typename Value, class Hash>
-Key ConcurrentHashMap<Key, Value, Hash>::KINITIAL = ((((size_t)1 << 62) - 1) << 3);
+Key ConcurrentHashMap<Key, Value, Hash>::KINITIAL = ((((size_t)1 << 62) - 1) << BITS_MARKED);
 template <typename Key, typename Value, class Hash>
-Key ConcurrentHashMap<Key, Value, Hash>::KTOMBSTONE = ((((size_t)1 << 62) - 2) << 3);
+Key ConcurrentHashMap<Key, Value, Hash>::KTOMBSTONE = ((((size_t)1 << 62) - 2) << BITS_MARKED);
 
 #endif

@@ -12,8 +12,8 @@ namespace ucf
 
         bool insert(ValT el)
         {
-            ValT shiftedEl = el << 3;
-            assert(shiftedEl >> 3 == el);
+            ValT shiftedEl = el << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED;
+            assert((shiftedEl >> ConcurrentHashMap<KeyT, ValT>::BITS_MARKED) == el);
 
             ValT x = c->put(shiftedEl, shiftedEl);
             return x == shiftedEl;
@@ -21,17 +21,17 @@ namespace ucf
 
         bool erase(ValT el)
         {
-            return c->remove(el << 3);
+            return c->remove(el << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED);
         }
 
         bool contains(KeyT el)
         {
-            return c->containsKey(el << 3);
+            return c->containsKey(el << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED);
         }
 
         ValT get(KeyT el)
         {
-            return c->get(el << 3) >> 3;
+            return c->get(el << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED) >> ConcurrentHashMap<KeyT, ValT>::BITS_MARKED;
         }
 
         size_t count()
@@ -41,7 +41,7 @@ namespace ucf
 
         ValT increment(KeyT el)
         {
-            return c->update(el << 3, ((((size_t)1 << 61) - 3) << 3), ConcurrentHashMap<KeyT, ValT>::Table::increment);
+            return c->update(el << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED, ((((size_t)1 << 61) - 3) << ConcurrentHashMap<KeyT, ValT>::BITS_MARKED), ConcurrentHashMap<KeyT, ValT>::Table::increment);
         }
 
         container_type(const TestOptions &opt, bool reconstruct = false)

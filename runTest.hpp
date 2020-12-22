@@ -12,7 +12,7 @@
 #include <thread>
 #include <vector>
 
-//#define pmDef
+//#define ucfDef
 //#define randomTestDef
 
 // Only uncomment PMEM containers when you use them.
@@ -130,7 +130,7 @@ static void help(const std::string &executable)
               << "-n num   number of total operations executed (default: " << tmp.numops << ")\n"
               << "-p num   number of parallel runs (default: " << tmp.numruns << ")\n"
               << "-c num   sets initial container capacity to 2^num (default: " << tmp.capacity << ")\n"
-              << "-f name  name of the mmaped file (default: " << tmp.filename << ")\n"
+              << "-f name  path to mmaped files (default: " << tmp.filename << ")\n"
               << "-r bool  whether to run the recovery test or the main test (default: " << tmp.recover << ")\n"
               << "-w bool  whether to wipe or recover the persistent file (default: " << tmp.wipeFile << ")\n"
               << "-h       displays this help message\n"

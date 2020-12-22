@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 #include <typeinfo>
+#include <atomic>
 
 // Globally defined constants, functions, etc.
 
@@ -13,7 +14,7 @@ using duration_unit = std::chrono::milliseconds;
 
 // The key and value datatypes.
 // NOTE: Certain tests are only compatible with certain types.
-// NOTE: Type must reserve the 3 least significant bits.
+// NOTE: Type must reserve the 2 least significant bits.
 // NOTE: Type must reserve some values as sentinels.
 // NOTE: Type must be 64 bits (perhaps fewer).
 using KeyT = size_t;
@@ -30,6 +31,9 @@ static constexpr bool KILL_HARD = true;
 static constexpr bool ALWAYS_RUN_CONSISTENCY_CHECKS = false;
 
 thread_local size_t localThreadNum;
+
+// TODO: This is more of a hack to place this here, but it's easy.
+std::atomic<size_t> fileNameCounter{0};
 
 // Test options can be overridden by command line.
 // The test itself has final say in which parameters are used.
