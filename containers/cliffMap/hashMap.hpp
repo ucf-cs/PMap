@@ -43,7 +43,7 @@
 #include "persistence.hpp"
 // Pointer marking functions and flags.
 #include "marking.hpp"
-
+// Global definitions.
 #include "define.hpp"
 
 // mmap.
@@ -57,7 +57,6 @@
 #include <errno.h>
 
 // These are used to enable and disable different variants of our design.
-// TODO: Debug resizing.
 #define RESIZE
 
 inline const size_t REPROBE_LIMIT = 10;
@@ -720,49 +719,104 @@ public:
     // Constructor.
     ConcurrentHashMap(const char *fileDir, size_t size = Table::MIN_SIZE, bool reconstruct = true)
     {
-        // TODO: Recovery.
-        // Name tables by order of creation. This allows inferring our layers.
-        // Timestamp may be sufficient.
-        // File size may be sufficient if we only allow expansion.
-        // We can filter out empty tables, which may exist during a multithreaded table allocation race.
-        // For each table
-        // If table is empty, delete it and continue.
-        // If table is fully migrated (special empty case), delete it and continue.
-        // if table is partially migrated, migrate it to the next non-empty table, then delete it and continue by working with the newer table.
-        // if table is at the top level (latest table), then we are done migrating. Close the file handle but keep the mmap.
-        // Assign our top-level table at the top level in our data structure.
+        // Recovery.
+        if (reconstruct)
+        {
+            std::vector<std::string> tableNames;
+            std::vector<Table *> tables;
 
-        // std::vector<std::string> tables;
+            // Get the table names.
+            std::filesystem::path path = fileDir;
+            for (auto &p : std::filesystem::directory_iterator(path))
+            {
+                const std::string filenameStr = p.path().filename().string();
+                if (p.is_regular_file())
+                {
+                    tableNames.push_back(filenameStr);
+                }
+            }
 
-        // // Get the table names.
-        // std::filesystem::path path = fileDir;
-        // for (auto &p : std::filesystem::directory_iterator(path))
-        // {
-        //     const std::string filenameStr = p.path().filename().string();
-        //     if (p.is_regular_file())
-        //     {
-        //         tables.push_back(filenameStr);
-        //     }
-        // }
+            // Sort the tables by name.
+            std::sort(tableNames.begin(), tableNames.end(),
+                      [](std::string a, std::string b) {
+                          return a.compare(b) < 0;
+                      });
 
-        // // Sort the tables by name.
-        // std::sort(tables.begin(), tables.end(),
-        //           [](std::string a, std::string b) {
-        //               return a.compare(b) < 0;
-        //           });
+            // For each table.
+            // Map the table.
+            // Check if the table is empty or migrated.
+            for (auto it = tableNames.begin(); it != tableNames.end(); ++it)
+            {
+                // Allocate an mmapped table.
+                Table *table = Table::mmapTable(!reconstruct, size, 0, (*it).c_str());
 
-        // // For each table.
-        // for (auto it = myvector.begin(); it != myvector.end(); ++it)
-        // {
-        //     // Allocate an mmapped table.
-        //     Table *table = Table::mmapTable(!reconstruct, size, 0, *it);
-        // }
+                // If the table is empty, deallocate it and continue.
+                if (table->chm.size.load() == 0)
+                {
+                    Table::munmapTable(table);
+                }
 
-        // TEMP: Just make a table, bypassing recovery.
-        // Allocate an mmapped table.
-        Table *table = Table::mmapTable(!reconstruct, size, 0, fileDir);
-        // Store the table.
-        this->table.store(table);
+                // If the table is fully migrated, deallocate it and continue.
+                bool migrationDone = true;
+                // Check for non-migrated values.
+                for (size_t i = 0; i < table->len; i++)
+                {
+                    ValT val = table->value(i);
+                    // If the value is a tombstone, initial value, or migrated.
+                    if (val != VTOMBSTONE ||
+                        val != VINITIAL ||
+                        val != TOMBPRIME)
+                    {
+                        // Then migration for this value is complete.
+                        continue;
+                    }
+                    else
+                    {
+                        // Migration did not complete.
+                        migrationDone = false;
+                        break;
+                    }
+                }
+                // If this table was fully migrated.
+                if (migrationDone)
+                {
+                    // Deallocate it.
+                    Table::munmapTable(table);
+                    // TODO: Consider deleting the underlying file.
+                }
+                else
+                {
+                    // Migration is incomplete. Add it to our list.
+                    tables.push_back(table);
+                }
+            }
+            // Now that tables are filtered out, perform migrations (or just link tables together).
+            Table *oldTable = NULL;
+            Table *newTable = NULL;
+            for (auto it = tables.begin(); it != tables.end(); ++it)
+            {
+                oldTable = newTable;
+                newTable = *it;
+
+                if (oldTable != NULL)
+                {
+                    // Link the levels. This should always succeed, since we are running only one thread.
+                    bool CASSucceed = oldTable->chm.CASNewTable(newTable);
+                    assert(CASSucceed);
+                }
+            }
+            // Store the lowest table with an incomplete migration, as the base.
+            // Might as well not migrate during recovery, since we lose out on parallel migration performance.
+            this->table.store(tables[0]);
+        }
+        else
+        {
+            // Alternative approach: just make a table, bypassing recovery.
+            // Allocate a new, mmapped table.
+            Table *table = Table::mmapTable(!reconstruct, size, 0, fileDir);
+            // Store the table.
+            this->table.store(table);
+        }
         return;
     }
     // TODO: This filename isn't a given, especially since resizing could have more than one file at a time.
