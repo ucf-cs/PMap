@@ -29,7 +29,6 @@
 const uintptr_t FLUSH_ALIGN = 64;
 
 // Base persistence functions.
-// TODO: Consider relocating these base functions to another file.
 __attribute__((unused)) static void PERSIST(const void *addr, size_t len)
 {
 #ifdef DURABLE

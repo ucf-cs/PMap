@@ -1,5 +1,3 @@
-// TODO: Implement this using Peter's test.
-
 #ifndef ALTERNATING_HPP
 #define ALTERNATING_HPP
 

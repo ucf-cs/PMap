@@ -12,7 +12,6 @@ namespace degreeTest
     struct test_type : Test
     {
     private:
-        // TODO: Adapt this.
         static void reportDegree(ThreadInfo &ti)
         {
             size_t elemCount = ((container_type *)ti.container)->count();

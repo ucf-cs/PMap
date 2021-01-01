@@ -9,7 +9,6 @@
 // In structures that cannot count, simply records existance of the number.
 namespace redditTest
 {
-    // TODO: Adapt this test for reddit input.
     struct test_type : Test
     {
     private:

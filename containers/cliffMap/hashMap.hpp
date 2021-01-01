@@ -7,7 +7,6 @@
 // NOTE: Reserves 3 bits to use PMwCAS. Leaves no spare bits.
 // Easy persistence can be done based on this: https://dl.acm.org/doi/abs/10.1145/2935764.2935810 and this: http://concurrencyfreaks.blogspot.com/2018/01/a-lock-free-persistent-queue.html
 
-// TODO: Uses hopscotch hashing to improve table utilization: https://en.wikipedia.org/wiki/Hopscotch_hashing
 // Lock-free design https://arxiv.org/pdf/1911.03028.pdf and code https://github.com/DaKellyFella/LockFreeHopscotchHashing/blob/master/src/hash-tables/hsbm_lf.h
 
 // Uses xxhash for fast random hashing: https://github.com/RedSpah/xxhash_cpp
@@ -763,16 +762,17 @@ public:
                 {
                     ValT val = table->value(i);
                     // If the value is a tombstone, initial value, or migrated.
-                    if (val != VTOMBSTONE ||
-                        val != VINITIAL ||
-                        val != TOMBPRIME)
+                    if (val == VTOMBSTONE ||
+                        val == VINITIAL ||
+                        val == TOMBPRIME)
                     {
                         // Then migration for this value is complete.
                         continue;
                     }
+                    // Migration did not complete.
+                    // NOTE: If a migration was in progress (MigrationFlag is set for a valid value), then we consider migration incomplete as well.
                     else
                     {
-                        // Migration did not complete.
                         migrationDone = false;
                         break;
                     }
@@ -782,7 +782,11 @@ public:
                 {
                     // Deallocate it.
                     Table::munmapTable(table);
-                    // TODO: Consider deleting the underlying file.
+                    // Delete the underlying file.
+                    if (std::remove((*it).c_str()) != 0)
+                    {
+                        fprintf(stderr, "Error deleting file \"%s\". Error %d\n", (*it).c_str(), errno);
+                    }
                 }
                 else
                 {
@@ -1266,7 +1270,6 @@ public:
 
 private:
     // The structure that stores the top table.
-    // TODO: Add in table file reasoning.
     std::atomic<Table *> table;
 };
 
