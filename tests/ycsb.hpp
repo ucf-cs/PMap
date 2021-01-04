@@ -35,9 +35,9 @@ namespace YCSBTest
 
             // Load phase.
             // TODO: Figure out a better way to pass in file name.
-            if ((ycsb = fopen("/data/YCSB/outputLoada.txt", "r")) == nullptr)
+            if ((ycsb = fopen("/home/kenneth/PMap/data/YCSB/outputLoada.txt", "r")) == nullptr)
             {
-                printf("failed to read %s\n", "/data/YCSB/outputLoada.txt");
+                printf("failed to read %s\n", "/home/kenneth/PMap/data/YCSB/outputLoada.txt");
                 exit(1);
             }
             while (getline(&pbuf, &len, ycsb) != -1)
@@ -64,9 +64,9 @@ namespace YCSBTest
             }
 
             // TODO: Figure out a better way to pass in file name.
-            if ((ycsb_read = fopen("/data/YCSB/outputRuna.txt", "r")) == NULL)
+            if ((ycsb_read = fopen("/home/kenneth/PMap/data/YCSB/outputRuna.txt", "r")) == NULL)
             {
-                printf("fail to read %s\n", "/data/YCSB/outputRuna.txt");
+                printf("fail to read %s\n", "/home/kenneth/PMap/data/YCSB/outputRuna.txt");
                 exit(1);
             }
 
@@ -110,6 +110,11 @@ namespace YCSBTest
                 }
                 assert(move[operation_num % ti.num_threads] <= operationCount);
                 operation_num++;
+                // Can stop early if we want to test a subset of operations.
+                if (operation_num > operationCount)
+                {
+                    break;
+                }
             }
             fclose(ycsb_read);
 
