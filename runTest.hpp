@@ -13,7 +13,7 @@
 #include <vector>
 
 //#define ucfDef
-//#define randomTestDef
+//#define YCSBTestDef
 
 // Only uncomment PMEM containers when you use them.
 // Otherwise, they will try to open a PMEM file on persistent memory, even when unused.
@@ -49,6 +49,7 @@ using container_type = clevel::container_type;
 #include "tests/degree.hpp"
 #include "tests/random.hpp"
 #include "tests/reddit.hpp"
+#include "tests/ycsb.hpp"
 
 // The test to run.
 #ifdef alternatingTestDef
@@ -62,6 +63,9 @@ using test_type = redditTest::test_type;
 #endif
 #ifdef randomTestDef
 using test_type = randomTest::test_type;
+#endif
+#ifdef YCSBTestDef
+using test_type = YCSBTest::test_type;
 #endif
 
 TestOptions::TestOptions()

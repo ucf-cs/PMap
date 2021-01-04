@@ -686,7 +686,7 @@ public:
                     throw std::logic_error("mmap new file failed.");
                 }
                 // Ensure the allocation is actually to persistent memory.
-                assert(pmem_is_pmem(pairs, length));
+                //assert(pmem_is_pmem(pairs, length));
                 // Initialize the new file.
                 for (size_t i = 0; i < tableCapacity; i++)
                 {

@@ -1,7 +1,7 @@
 #!/bin/bash
 
 DATA_STRUCTURES=(ucfDef clevelDef stlDef pmDef onefileDef)
-TESTS=(alternatingTestDef degreeTestDef randomTestDef redditTestDef)
+TESTS=(YCSBTestDef alternatingTestDef degreeTestDef randomTestDef redditTestDef)
 
 for t in "${TESTS[@]}";
 do
