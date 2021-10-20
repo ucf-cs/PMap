@@ -236,6 +236,10 @@ public:
             // The number of usable slots.
             // If this number gets too large, consider resizing.
             std::atomic<size_t> slots;
+
+            // The unique ID of the table.
+            // This ID maps to the underlying file name for this table.
+            size_t id;
 #ifdef RESIZE
             // A replacement table.
             // All values in the current table must migrate here before deallocating the current table.
@@ -262,10 +266,11 @@ public:
 #endif
             // The CHM constructor.
             // The CHM tracks control structure data for the hash table, particularly involving resizing.
-            CHM(size_t tableCapacity = Table::MIN_SIZE, size_t existingSize = 0)
+            CHM(size_t tableCapacity = Table::MIN_SIZE, size_t existingSize = 0, size_t id = 0)
             {
                 this->size.store(existingSize);
                 slots.store(tableCapacity);
+                this->id = id;
 #ifdef RESIZE
                 newTable.store(nullptr);
                 copyIdx.store(0);
@@ -342,8 +347,10 @@ public:
                     return newTable;
                 }
 
+                // Using a shared counter means more contention, but guaranteed file ordering.
+                size_t count = fileNameCounter.fetch_add(1);
                 // Allocate the new table.
-                std::string filename = getOrderedFileName();
+                std::string filename = getOrderedFileName(count);
                 newTable = mmapTable(true, newSize, size, filename.c_str());
 
                 // Attempt to CAS the new table.
@@ -475,11 +482,11 @@ public:
         // The number of pairs that can fit in the table.
         size_t len;
 
-        Table(size_t tableCapacity, size_t existingSize, KVpair *pairs = NULL)
+        Table(size_t tableCapacity, size_t existingSize, size_t id, KVpair *pairs = NULL)
         {
             assert(tableCapacity % 2 == 0);
             assert(tableCapacity >= MIN_SIZE);
-            new (&chm) CHM(tableCapacity, existingSize);
+            new (&chm) CHM(tableCapacity, existingSize, id);
             assert(pairs != NULL);
             this->pairs = pairs;
             len = tableCapacity;
@@ -537,21 +544,52 @@ public:
             pcas<Value>(&table->pairs[idx].value, oldValueRef, newValue);
             return oldValueRef;
         }
-        static std::string getOrderedFileName()
+        // TODO: Grab count and store in CHM.
+        static std::string getOrderedFileName(size_t count)
         {
-            // Using a shared counter means more contention, but guaranteed file ordering.
-            size_t count = fileNameCounter.fetch_add(1);
             return "/mnt/pmem/pm1/tables/" + std::to_string(count) + ".dat";
-
-            // The file name is based on the UNIX epoch time.
-            // The thread ID is concatonated to it, just in case, for distinction.
-            auto chronoTime = std::chrono::system_clock::now();
-            auto intTime = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               chronoTime.time_since_epoch())
-                               .count();
-            std::string ret = "/mnt/pmem/pm1/tables/" +
-                              std::to_string(intTime) + "_" +
-                              std::to_string(localThreadNum) + ".dat";
+        }
+        // Take a full table name with path and keep only the associated number.
+        static size_t numFromName(const char *source)
+        {
+            // Get the length of the string.
+            size_t len = 0;
+            while (source[len] != '\0')
+            {
+                len++;
+            }
+            // Work our way to the last ".", which comes just after the num.
+            size_t end;
+            for (size_t i = len - 1; i >= 0; i--)
+            {
+                if (source[i] == '.')
+                {
+                    end = i;
+                    break;
+                }
+            }
+            // Work our way to the last "/", which comes just before the num.
+            size_t start;
+            for (size_t i = len - 1; i >= 0; i--)
+            {
+                if (source[i] == '/')
+                {
+                    start = i;
+                    break;
+                }
+            }
+            // Copy the characters over to an appropriately sized space, say 30.
+            char *dest = (char *)malloc(sizeof(char *) * 30);
+            size_t idx = 0;
+            for (size_t i = start + 1; i < end; i++)
+            {
+                dest[idx] = source[i];
+                idx++;
+            }
+            dest[idx] = '\n';
+            // Convert the string to an integer.
+            size_t ret = atoi(dest);
+            // Return the integer.
             return ret;
         }
         static Table *mmapTable(bool newTable, size_t tableCapacity, size_t existingSize = 0, const char *constFileName = NULL)
@@ -559,6 +597,7 @@ public:
             // This is the name and location of our persistent memory file for this table.
             std::string filenameString;
             const char *fileName;
+            size_t count;
             // This will hold the file descriptor of our memory mapped file.
             int fd;
             // This will hold the memory address of our memory mapped table.
@@ -569,12 +608,15 @@ public:
             // If a filename wasn't provided, get one ourselves.
             if (constFileName == NULL)
             {
-                filenameString = Table::getOrderedFileName();
+                count = fileNameCounter.fetch_add(1);
+                filenameString = Table::getOrderedFileName(count);
                 fileName = filenameString.c_str();
             }
             else
             {
                 fileName = constFileName;
+                // Get count from file name.
+                count = Table::numFromName(fileName);
             }
 
             // If we want to map a new file.
@@ -591,7 +633,7 @@ public:
                 fd = -1;
             }
 
-            // If we opened an exsiting file, just map the data.
+            // If we opened an existing file, just map the data.
             if (fd != -1)
             {
                 // Used to store file information.
@@ -620,7 +662,7 @@ public:
                 // Allocate our table.
                 // We pass in the asigned location of our KV pairs to assign them to the structure.
                 // We pass in the size of the table to assign the length.
-                table = new Table(size, existingSize, pairs);
+                table = new Table(size, existingSize, count, pairs);
 
                 // Use the KV pairs to infer the number of used and free entries in the table.
                 table->chm.size.store(0);
@@ -700,7 +742,7 @@ public:
                 // Allocate our table.
                 // We pass in the location of our KV pairs to assign them to the structure.
                 // We pass in the size of the table to assign the length.
-                table = new Table(tableCapacity, existingSize, pairs);
+                table = new Table(tableCapacity, existingSize, count, pairs);
             }
             // After the mmap() call has returned, the file descriptor, fd, can be closed immediately, without invalidating the mapping.
             close(fd);
@@ -725,6 +767,7 @@ public:
         {
             std::vector<std::string> tableNames;
             std::vector<Table *> tables;
+            std::string lastTableName;
 
             // Get the table names.
             std::filesystem::path path = fileDir;
@@ -739,7 +782,8 @@ public:
 
             // Sort the tables by name.
             std::sort(tableNames.begin(), tableNames.end(),
-                      [](std::string a, std::string b) {
+                      [](std::string a, std::string b)
+                      {
                           return a.compare(b) < 0;
                       });
 
@@ -795,6 +839,7 @@ public:
                     // Migration is incomplete. Add it to our list.
                     tables.push_back(table);
                 }
+                lastTableName = *it;
             }
             // Now that tables are filtered out, perform migrations (or just link tables together).
             Table *oldTable = NULL;
@@ -814,12 +859,15 @@ public:
             // Store the lowest table with an incomplete migration, as the base.
             // Might as well not migrate during recovery, since we lose out on parallel migration performance.
             this->table.store(tables[0]);
+
+            // Ensure we use unique file names.
+            fileNameCounter.store(Table::numFromName(lastTableName.c_str()));
         }
         else
         {
             // Alternative approach: just make a table, bypassing recovery.
             // Allocate a new, mmapped table.
-            Table *table = Table::mmapTable(!reconstruct, size, 0, fileDir);
+            Table *table = Table::mmapTable(!reconstruct, size, 0);
             // Store the table.
             this->table.store(table);
         }
@@ -835,6 +883,7 @@ public:
         // TODO: Unmap all mapped files, I guess.
         Table *table = table.load();
         // Unmap the file.
+        // TODO: What about the other files?
         if (!munmapTable(table))
         {
             // Error.
@@ -932,7 +981,7 @@ public:
                 return VINITIAL;
             }
 #ifdef RESIZE
-            // Check for the existance of a new table.
+            // Check for the existence of a new table.
             Table *newTable = table->chm.newTable.load();
 #endif
             // Compare the key we found.
@@ -945,7 +994,7 @@ public:
                 if (!isMarked((uintptr_t)V, MigrationFlag))
                 {
                     // No table copy.
-                    // We can return the assoicated value.
+                    // We can return the associated value.
                     return (V == VTOMBSTONE) ? VINITIAL : V;
                 }
 
